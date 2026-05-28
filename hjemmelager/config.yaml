@@ -2,7 +2,7 @@ name: Hjemmelager
 version: "0.1.1"
 slug: hjemmelager
 description: Enkel hjemme-inventar med NFC/tag-flyt, lagerstatus og lav beholdning. Kodenavn Første hylle.
-url: https://github.com/Geirgutt/tr-kker/tree/main/hjemmelager
+url: https://github.com/your-username/your-repo/tree/main/hjemmelager
 arch:
   - aarch64
   - amd64
