@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.3 - Første hylle
+
+- Viser små varebilder i varelisten når varen har bilde.
+- La inn støtte for å laste opp bildefil direkte hvis man ikke har bilde-URL.
+
 ## 0.1.2 - Første hylle
 
 - Fikset Docker-build for nyere Home Assistant Supervisor-versjoner ved å bruke eksplisitt base image.

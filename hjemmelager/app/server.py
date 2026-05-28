@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import base64
 import html
 import json
 import os
@@ -11,11 +12,13 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "0.1.2"
+APP_VERSION = "0.1.3"
 APP_CODENAME = "Første hylle"
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
 PORT = int(os.environ.get("HJEMMELAGER_PORT", "8099"))
+MAX_IMAGE_UPLOAD_BYTES = 1_500_000
+ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 
 
 def now():
@@ -125,6 +128,72 @@ def fmt_num(value):
     return str(int(value)) if value.is_integer() else f"{value:g}"
 
 
+def image_value(data, existing=""):
+    if data.get("remove_image"):
+        return ""
+    if data.get("image_file_data_url"):
+        return data["image_file_data_url"]
+    return (data.get("image_url") or existing or "").strip()
+
+
+def parse_content_disposition(value):
+    parts = [part.strip() for part in value.split(";")]
+    params = {}
+    for part in parts[1:]:
+        if "=" not in part:
+            continue
+        key, raw_value = part.split("=", 1)
+        params[key.strip().lower()] = raw_value.strip().strip('"')
+    return params
+
+
+def parse_multipart_form(raw, content_type):
+    boundary_marker = "boundary="
+    if boundary_marker not in content_type:
+        raise ValueError("Missing multipart boundary")
+    boundary = content_type.split(boundary_marker, 1)[1].split(";", 1)[0].strip().strip('"')
+    delimiter = b"--" + boundary.encode("utf-8")
+    data = {}
+
+    for part in raw.split(delimiter):
+        part = part.strip(b"\r\n")
+        if not part or part == b"--":
+            continue
+        if part.endswith(b"--"):
+            part = part[:-2].rstrip(b"\r\n")
+        if b"\r\n\r\n" not in part:
+            continue
+        raw_headers, content = part.split(b"\r\n\r\n", 1)
+        headers = {}
+        for line in raw_headers.decode("utf-8", "replace").split("\r\n"):
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            headers[key.lower().strip()] = value.strip()
+
+        disposition = headers.get("content-disposition", "")
+        params = parse_content_disposition(disposition)
+        name = params.get("name")
+        if not name:
+            continue
+
+        filename = params.get("filename", "")
+        content = content.rstrip(b"\r\n")
+        if filename:
+            if not content:
+                continue
+            content_type = headers.get("content-type", "application/octet-stream").split(";", 1)[0].lower()
+            if content_type not in ALLOWED_IMAGE_TYPES:
+                raise ValueError("Bildet må være JPEG, PNG, WebP eller GIF")
+            if len(content) > MAX_IMAGE_UPLOAD_BYTES:
+                raise ValueError("Bildet er for stort. Maks 1,5 MB")
+            data[f"{name}_data_url"] = f"data:{content_type};base64,{base64.b64encode(content).decode('ascii')}"
+        else:
+            data[name] = content.decode("utf-8", "replace")
+
+    return data
+
+
 def save_event(conn, item_id, action, delta=None, quantity_after=None, note=""):
     conn.execute(
         """
@@ -156,7 +225,7 @@ def create_item(data):
                 (data.get("location") or "").strip(),
                 (data.get("category") or "").strip(),
                 tag_id,
-                (data.get("image_url") or "").strip(),
+                image_value(data),
                 (data.get("note") or "").strip(),
                 1 if str(data.get("shopping_enabled", "1")).lower() in ("1", "true", "on", "yes") else 0,
                 timestamp,
@@ -192,7 +261,7 @@ def update_item(item_id, data):
                 (data.get("location") or "").strip(),
                 (data.get("category") or "").strip(),
                 tag_id,
-                (data.get("image_url") or "").strip(),
+                image_value(data, existing["image_url"]),
                 (data.get("note") or "").strip(),
                 1 if str(data.get("shopping_enabled", "1")).lower() in ("1", "true", "on", "yes") else 0,
                 timestamp,
@@ -328,6 +397,21 @@ def page(title, body, base_path=""):
       border-radius: 8px;
       padding: 14px;
     }}
+    .item-card {{
+      display: grid;
+      grid-template-columns: 76px 1fr;
+      gap: 12px;
+      align-items: start;
+    }}
+    .item-thumb {{
+      width: 76px;
+      aspect-ratio: 1;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      object-fit: cover;
+      background: color-mix(in srgb, var(--line) 35%, transparent);
+    }}
+    .item-main {{ min-width: 0; }}
     .item-title {{
       display: flex;
       align-items: start;
@@ -377,6 +461,8 @@ def page(title, body, base_path=""):
       nav {{ justify-content: flex-start; }}
       .form-grid {{ grid-template-columns: 1fr; }}
       .qty {{ font-size: 1.7rem; }}
+      .item-card {{ grid-template-columns: 64px 1fr; }}
+      .item-thumb {{ width: 64px; }}
     }}
   </style>
 </head>
@@ -403,18 +489,22 @@ def item_card(item):
     low = '<span class="pill low">Lav</span>' if item["is_low"] else ""
     meta = " · ".join(filter(None, [item["category"], item["location"]]))
     kind = "Forbruksvare" if item["kind"] == "consumable" else "Gjenstand"
+    thumb = f'<a href="item/{item["id"]}"><img class="item-thumb" src="{esc(item["image_url"])}" alt=""></a>' if item["image_url"] else '<div class="item-thumb" aria-hidden="true"></div>'
     return f"""
-    <article class="card">
-      <div class="item-title">
-        <h2><a href="item/{item['id']}">{esc(item['name'])}</a></h2>
-        {low}
-      </div>
-      <div class="muted">{esc(kind)}{(" · " + esc(meta)) if meta else ""}</div>
-      <div class="qty">{fmt_num(item['quantity'])} <span class="muted">{esc(item['unit'])}</span></div>
-      <div class="actions">
-        <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn" title="Ta ut en">-1</button></form>
-        <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="1"><button class="btn" title="Legg til en">+1</button></form>
-        <a class="btn" href="item/{item['id']}">Åpne</a>
+    <article class="card item-card">
+      {thumb}
+      <div class="item-main">
+        <div class="item-title">
+          <h2><a href="item/{item['id']}">{esc(item['name'])}</a></h2>
+          {low}
+        </div>
+        <div class="muted">{esc(kind)}{(" · " + esc(meta)) if meta else ""}</div>
+        <div class="qty">{fmt_num(item['quantity'])} <span class="muted">{esc(item['unit'])}</span></div>
+        <div class="actions">
+          <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn" title="Ta ut en">-1</button></form>
+          <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="1"><button class="btn" title="Legg til en">+1</button></form>
+          <a class="btn" href="item/{item['id']}">Åpne</a>
+        </div>
       </div>
     </article>
     """
@@ -437,8 +527,14 @@ def item_form(item=None, tag_id=""):
     }
     action = f"item/{item['id']}/edit" if item["id"] else "new"
     checked = "checked" if item["shopping_enabled"] else ""
+    image_url = "" if str(item["image_url"]).startswith("data:") else item["image_url"]
+    remove_image = f"""
+        <label class="full">
+          <span><input type="checkbox" name="remove_image" value="1"> Fjern bilde</span>
+        </label>
+    """ if item["image_url"] else ""
     return f"""
-    <form class="stack" method="post" action="{action}">
+    <form class="stack" method="post" action="{action}" enctype="multipart/form-data">
       <div class="form-grid">
         <label class="full">Navn
           <input name="name" value="{esc(item['name'])}" required>
@@ -468,8 +564,12 @@ def item_form(item=None, tag_id=""):
           <input name="tag_id" value="{esc(item['tag_id'] or '')}" placeholder="tag_id fra Home Assistant">
         </label>
         <label class="full">Bilde-URL
-          <input name="image_url" value="{esc(item['image_url'])}" placeholder="valgfritt">
+          <input name="image_url" value="{esc(image_url)}" placeholder="valgfritt">
         </label>
+        <label class="full">Last opp bilde
+          <input name="image_file" type="file" accept="image/jpeg,image/png,image/webp,image/gif">
+        </label>
+        {remove_image}
         <label class="full">Notat
           <textarea name="note">{esc(item['note'])}</textarea>
         </label>
@@ -505,6 +605,8 @@ class Handler(BaseHTTPRequestHandler):
         content_type = self.headers.get("Content-Type", "")
         if "application/json" in content_type:
             return json.loads(raw.decode("utf-8") or "{}")
+        if "multipart/form-data" in content_type:
+            return parse_multipart_form(raw, content_type)
         parsed = parse_qs(raw.decode("utf-8"))
         return {key: values[-1] for key, values in parsed.items()}
 
