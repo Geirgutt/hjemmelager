@@ -15,13 +15,13 @@ Hjemmelager er en liten “Grocy-light” for Home Assistant. Den er laget for r
 ## Installasjon fra GitHub
 
 1. Legg repoet på GitHub.
-2. Oppdater `repository.yaml` og `hjemmelager/config.yaml` slik at `url` peker til ditt GitHub-repo.
+2. Sørg for at `repository.yaml` og `hjemmelager/config.yaml` peker til dette GitHub-repoet.
 3. I Home Assistant: gå til **Settings → Add-ons → Add-on Store**.
 4. Trykk menyen øverst til høyre, velg **Repositories**.
 5. Lim inn GitHub-URL-en til repoet, for eksempel:
 
    ```text
-   https://github.com/brukernavn/hjemmelager-addons
+   https://github.com/Geirgutt/tr-kker
    ```
 
 6. Trykk **Add**, finn **Hjemmelager**, installer og start.
