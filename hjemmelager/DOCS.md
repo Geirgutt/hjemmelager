@@ -93,6 +93,54 @@ curl -X POST http://homeassistant.local:8099/api/tag/04-AB-CD/adjust \
 
 ## Oppdatering
 
+Add-onen skal ikke oppdatere sin egen container innenfra. Home Assistant Supervisor eier installasjon og oppdatering av add-ons.
+
+Når Hjemmelager er installert fra GitHub-repoet, vil Home Assistant normalt lage en `update`-entity for add-onen. Finn riktig entity-id i **Settings → Devices & services → Entities** ved å søke etter `Hjemmelager`.
+
+I eksemplene under brukes:
+
+```text
+update.hjemmelager_update
+```
+
+Bytt den ut hvis Home Assistant har gitt entity-en et annet navn.
+
+### Daglig sjekk med varsel
+
+Bruk dette hvis du vil ha kontroll før du installerer:
+
+```yaml
+alias: Hjemmelager - daglig oppdateringssjekk
+description: Sjekker Hjemmelager sin update-entity hver morgen og varsler hvis ny versjon finnes.
+mode: single
+trigger:
+  - platform: time
+    at: "07:30:00"
+variables:
+  hjemmelager_update_entity: update.hjemmelager_update
+action:
+  - action: homeassistant.update_entity
+    target:
+      entity_id: "{{ hjemmelager_update_entity }}"
+  - delay: "00:00:10"
+  - condition: template
+    value_template: "{{ is_state(hjemmelager_update_entity, 'on') }}"
+  - action: persistent_notification.create
+    data:
+      title: Hjemmelager-oppdatering tilgjengelig
+      message: >
+        Ny Hjemmelager-versjon er tilgjengelig.
+        Installert: {{ state_attr(hjemmelager_update_entity, 'installed_version') }}
+        Ny: {{ state_attr(hjemmelager_update_entity, 'latest_version') }}
+      notification_id: hjemmelager_update_available
+```
+
+Samme eksempel ligger i:
+
+```text
+hjemmelager/examples/daily_update_check.yaml
+```
+
 ### Lokal `/addons`-installasjon
 
 1. Kopier inn nye filer i `/addons/hjemmelager`.
@@ -113,10 +161,10 @@ Data lagres i add-onens `/data/hjemmelager.db`, så databasen overlever restart 
 
 Hver godkjente versjon skal ha både versjonsnummer og kodenavn.
 
-Denne første versjonen er:
+Gjeldende versjon er:
 
 ```text
-0.1.0 - Første hylle
+0.1.1 - Første hylle
 ```
 
 Kontroller installert versjon på én av disse måtene:

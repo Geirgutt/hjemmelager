@@ -1,0 +1,23 @@
+alias: Hjemmelager - daglig oppdateringssjekk
+description: Sjekker Hjemmelager sin update-entity hver morgen og varsler hvis ny versjon finnes.
+mode: single
+trigger:
+  - platform: time
+    at: "07:30:00"
+variables:
+  hjemmelager_update_entity: update.hjemmelager_update
+action:
+  - action: homeassistant.update_entity
+    target:
+      entity_id: "{{ hjemmelager_update_entity }}"
+  - delay: "00:00:10"
+  - condition: template
+    value_template: "{{ is_state(hjemmelager_update_entity, 'on') }}"
+  - action: persistent_notification.create
+    data:
+      title: Hjemmelager-oppdatering tilgjengelig
+      message: >
+        Ny Hjemmelager-versjon er tilgjengelig.
+        Installert: {{ state_attr(hjemmelager_update_entity, 'installed_version') }}
+        Ny: {{ state_attr(hjemmelager_update_entity, 'latest_version') }}
+      notification_id: hjemmelager_update_available
