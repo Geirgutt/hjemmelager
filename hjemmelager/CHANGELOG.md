@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.5 - Første hylle
+
+- La inn egne registre for plasseringer og kategorier.
+- Endret vareskjemaet til valglister med mulighet for å legge til nye steder og kategorier.
+- La inn egen side for å administrere steder og kategorier.
+
 ## 0.1.4 - Første hylle
 
 - La inn kompakt listevisning for store varelister.

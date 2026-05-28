@@ -12,7 +12,7 @@ from urllib.parse import urlencode, parse_qs, unquote, urlparse
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "0.1.4"
+APP_VERSION = "0.1.5"
 APP_CODENAME = "Første hylle"
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
@@ -54,6 +54,18 @@ def init_db():
                 updated_at integer not null
             );
 
+            create table if not exists locations (
+                id integer primary key autoincrement,
+                name text not null unique,
+                created_at integer not null
+            );
+
+            create table if not exists categories (
+                id integer primary key autoincrement,
+                name text not null unique,
+                created_at integer not null
+            );
+
             create table if not exists events (
                 id integer primary key autoincrement,
                 item_id integer,
@@ -66,6 +78,15 @@ def init_db():
             );
             """
         )
+        for table, column in (("locations", "location"), ("categories", "category")):
+            values = conn.execute(
+                f"select distinct trim({column}) as name from items where trim({column}) != ''"
+            ).fetchall()
+            for row in values:
+                conn.execute(
+                    f"insert or ignore into {table} (name, created_at) values (?, ?)",
+                    (row["name"], now()),
+                )
 
 
 def row_to_item(row):
@@ -101,18 +122,35 @@ def list_items(where="", params=()):
 
 
 def distinct_values(column):
-    if column not in ("category", "location"):
+    tables = {"category": "categories", "location": "locations"}
+    table = tables.get(column)
+    if not table:
         return []
     with db() as conn:
-        rows = conn.execute(
-            f"""
-            select distinct trim({column}) as value
-            from items
-            where trim({column}) != ''
-            order by lower(value)
-            """
-        ).fetchall()
-    return [row["value"] for row in rows]
+        rows = conn.execute(f"select name from {table} order by lower(name)").fetchall()
+    return [row["name"] for row in rows]
+
+
+def registry_value(data, field):
+    selected = (data.get(field) or "").strip()
+    new_value = (data.get(f"new_{field}") or "").strip()
+    return new_value or selected
+
+
+def save_registry_value(conn, table, value):
+    value = (value or "").strip()
+    if value:
+        conn.execute(f"insert or ignore into {table} (name, created_at) values (?, ?)", (value, now()))
+
+
+def create_registry_entry(kind, name):
+    tables = {"location": "locations", "category": "categories"}
+    table = tables.get(kind)
+    name = (name or "").strip()
+    if not table or not name:
+        return
+    with db() as conn:
+        save_registry_value(conn, table, name)
 
 
 def build_item_filters(search="", category="", location="", low_only=False):
@@ -240,7 +278,11 @@ def create_item(data):
     timestamp = now()
     tag_id = (data.get("tag_id") or "").strip() or None
     quantity = parse_float(data.get("quantity"))
+    location = registry_value(data, "location")
+    category = registry_value(data, "category")
     with db() as conn:
+        save_registry_value(conn, "locations", location)
+        save_registry_value(conn, "categories", category)
         cur = conn.execute(
             """
             insert into items (
@@ -254,8 +296,8 @@ def create_item(data):
                 quantity,
                 (data.get("unit") or "stk").strip(),
                 parse_float(data.get("min_quantity")),
-                (data.get("location") or "").strip(),
-                (data.get("category") or "").strip(),
+                location,
+                category,
                 tag_id,
                 image_value(data),
                 (data.get("note") or "").strip(),
@@ -275,7 +317,11 @@ def update_item(item_id, data):
         return None
     timestamp = now()
     tag_id = (data.get("tag_id") or "").strip() or None
+    location = registry_value(data, "location")
+    category = registry_value(data, "category")
     with db() as conn:
+        save_registry_value(conn, "locations", location)
+        save_registry_value(conn, "categories", category)
         conn.execute(
             """
             update items set
@@ -290,8 +336,8 @@ def update_item(item_id, data):
                 parse_float(data.get("quantity"), existing["quantity"]),
                 (data.get("unit") or existing["unit"]).strip(),
                 parse_float(data.get("min_quantity"), existing["min_quantity"]),
-                (data.get("location") or "").strip(),
-                (data.get("category") or "").strip(),
+                location,
+                category,
                 tag_id,
                 image_value(data, existing["image_url"]),
                 (data.get("note") or "").strip(),
@@ -585,6 +631,7 @@ def page(title, body, base_path=""):
       <nav>
         <a class="nav" href=".">Varer</a>
         <a class="nav" href="low-stock">Lav beholdning</a>
+        <a class="nav" href="organize">Steder</a>
         <a class="nav primary" href="new">Ny</a>
       </nav>
     </div>
@@ -678,6 +725,8 @@ def item_form(item=None, tag_id=""):
     action = f"item/{item['id']}/edit" if item["id"] else "new"
     checked = "checked" if item["shopping_enabled"] else ""
     image_url = "" if str(item["image_url"]).startswith("data:") else item["image_url"]
+    categories = distinct_values("category")
+    locations = distinct_values("location")
     remove_image = f"""
         <label class="full">
           <span><input type="checkbox" name="remove_image" value="1"> Fjern bilde</span>
@@ -696,7 +745,7 @@ def item_form(item=None, tag_id=""):
           </select>
         </label>
         <label>Kategori
-          <input name="category" value="{esc(item['category'])}" placeholder="Batterier, kabler, mat">
+          <select name="category">{option_list(categories, item["category"], "Ingen kategori")}</select>
         </label>
         <label>Antall
           <input name="quantity" type="number" step="0.01" value="{fmt_num(item['quantity'])}">
@@ -707,8 +756,14 @@ def item_form(item=None, tag_id=""):
         <label>Minimum
           <input name="min_quantity" type="number" step="0.01" value="{fmt_num(item['min_quantity'])}">
         </label>
+        <label>Ny kategori
+          <input name="new_category" placeholder="Matvarer, kabler, verktøy">
+        </label>
         <label>Plassering
-          <input name="location" value="{esc(item['location'])}" placeholder="Bod > Hylle 2 > Boks A">
+          <select name="location">{option_list(locations, item["location"], "Ingen plassering")}</select>
+        </label>
+        <label>Ny plassering
+          <input name="new_location" placeholder="Kjøkken > Kjøleskap">
         </label>
         <label class="full">NFC tag-id
           <input name="tag_id" value="{esc(item['tag_id'] or '')}" placeholder="tag_id fra Home Assistant">
@@ -732,6 +787,40 @@ def item_form(item=None, tag_id=""):
         <a class="btn" href=".">Avbryt</a>
       </div>
     </form>
+    """
+
+
+def organize_page():
+    locations = distinct_values("location")
+    categories = distinct_values("category")
+    location_list = "".join(f"<li>{esc(value)}</li>" for value in locations) or "<li>Ingen steder ennå</li>"
+    category_list = "".join(f"<li>{esc(value)}</li>" for value in categories) or "<li>Ingen kategorier ennå</li>"
+    return f"""
+    <h1>Steder og kategorier</h1>
+    <section class="grid">
+      <div class="card">
+        <h2>Plasseringer</h2>
+        <form class="stack" method="post" action="organize">
+          <input type="hidden" name="kind" value="location">
+          <label>Nytt sted
+            <input name="name" placeholder="Kjøkken > Kjøleskap" required>
+          </label>
+          <button class="btn primary">Legg til sted</button>
+        </form>
+        <ul>{location_list}</ul>
+      </div>
+      <div class="card">
+        <h2>Kategorier</h2>
+        <form class="stack" method="post" action="organize">
+          <input type="hidden" name="kind" value="category">
+          <label>Ny kategori
+            <input name="name" placeholder="Matvarer, kabler, verktøy" required>
+          </label>
+          <button class="btn primary">Legg til kategori</button>
+        </form>
+        <ul>{category_list}</ul>
+      </div>
+    </section>
     """
 
 
@@ -838,6 +927,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_html("Ny vare", f"<h1>Ny vare</h1>{item_form(tag_id=tag_id)}")
             return
 
+        if path == "organize":
+            self.send_html("Steder og kategorier", organize_page())
+            return
+
         if path == "low-stock":
             items = list_items("kind = 'consumable' and shopping_enabled = 1 and min_quantity > 0 and quantity <= min_quantity")
             cards = "".join(item_card(item) for item in items) or '<div class="card">Ingen lave beholdninger akkurat nå.</div>'
@@ -885,6 +978,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"items": list_items("kind = 'consumable' and shopping_enabled = 1 and min_quantity > 0 and quantity <= min_quantity")})
             return
 
+        if path == "api/locations":
+            self.send_json({"locations": distinct_values("location")})
+            return
+
+        if path == "api/categories":
+            self.send_json({"categories": distinct_values("category")})
+            return
+
         if path == "api/version":
             self.send_json(
                 {
@@ -912,6 +1013,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_html("Tag finnes", "<h1>Tag-id er allerede i bruk</h1>", HTTPStatus.CONFLICT)
                 return
             self.redirect(f"item/{item['id']}")
+            return
+
+        if path == "organize":
+            create_registry_entry(data.get("kind"), data.get("name"))
+            self.redirect("organize")
             return
 
         if path == "api/items":
