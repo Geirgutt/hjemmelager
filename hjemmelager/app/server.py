@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "0.1.1"
+APP_VERSION = "0.1.2"
 APP_CODENAME = "Første hylle"
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"

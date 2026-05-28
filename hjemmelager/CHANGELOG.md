@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.2 - Første hylle
+
+- Fikset Docker-build for nyere Home Assistant Supervisor-versjoner ved å bruke eksplisitt base image.
+- Fjernet utdaterte arkitekturverdier fra add-on-konfigurasjonen.
+
 ## 0.1.1 - Første hylle
 
 - La inn eksempler for daglig oppdateringssjekk via Home Assistant sin update-entity.

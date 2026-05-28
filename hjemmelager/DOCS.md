@@ -164,7 +164,7 @@ Hver godkjente versjon skal ha både versjonsnummer og kodenavn.
 Gjeldende versjon er:
 
 ```text
-0.1.1 - Første hylle
+0.1.2 - Første hylle
 ```
 
 Kontroller installert versjon på én av disse måtene:
