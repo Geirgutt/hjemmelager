@@ -8,11 +8,11 @@ import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import urlencode, parse_qs, unquote, urlparse
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "0.1.3"
+APP_VERSION = "0.1.4"
 APP_CODENAME = "Første hylle"
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
@@ -98,6 +98,38 @@ def list_items(where="", params=()):
     with db() as conn:
         rows = conn.execute(query, params).fetchall()
     return [row_to_item(row) for row in rows]
+
+
+def distinct_values(column):
+    if column not in ("category", "location"):
+        return []
+    with db() as conn:
+        rows = conn.execute(
+            f"""
+            select distinct trim({column}) as value
+            from items
+            where trim({column}) != ''
+            order by lower(value)
+            """
+        ).fetchall()
+    return [row["value"] for row in rows]
+
+
+def build_item_filters(search="", category="", location="", low_only=False):
+    clauses = []
+    params = []
+    if search:
+        clauses.append("(name like ? or location like ? or category like ? or tag_id like ? or note like ?)")
+        params.extend([f"%{search}%"] * 5)
+    if category:
+        clauses.append("category = ?")
+        params.append(category)
+    if location:
+        clauses.append("location = ?")
+        params.append(location)
+    if low_only:
+        clauses.append("kind = 'consumable' and shopping_enabled = 1 and min_quantity > 0 and quantity <= min_quantity")
+    return " and ".join(clauses), tuple(params)
 
 
 def get_item(item_id):
@@ -391,6 +423,26 @@ def page(title, body, base_path=""):
       grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
       gap: 12px;
     }}
+    .toolbar {{
+      display: grid;
+      gap: 10px;
+      margin-bottom: 14px;
+    }}
+    .filters {{
+      display: grid;
+      grid-template-columns: minmax(180px, 1.6fr) minmax(140px, 1fr) minmax(140px, 1fr) auto auto;
+      gap: 8px;
+      align-items: end;
+    }}
+    .view-switch {{
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }}
+    .view-switch .btn.active {{
+      background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+      border-color: var(--accent);
+    }}
     .card {{
       background: var(--panel);
       border: 1px solid var(--line);
@@ -412,6 +464,55 @@ def page(title, body, base_path=""):
       background: color-mix(in srgb, var(--line) 35%, transparent);
     }}
     .item-main {{ min-width: 0; }}
+    .item-list {{
+      display: grid;
+      gap: 6px;
+    }}
+    .item-row {{
+      display: grid;
+      grid-template-columns: 44px minmax(0, 1.4fr) minmax(120px, .8fr) minmax(90px, .6fr) auto;
+      gap: 10px;
+      align-items: center;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+    }}
+    .item-row-thumb {{
+      width: 44px;
+      aspect-ratio: 1;
+      border-radius: 7px;
+      border: 1px solid var(--line);
+      object-fit: cover;
+      background: color-mix(in srgb, var(--line) 35%, transparent);
+    }}
+    .item-row-title {{
+      min-width: 0;
+      font-weight: 750;
+    }}
+    .item-row-title a {{
+      color: var(--text);
+      text-decoration: none;
+    }}
+    .item-row-title a:hover {{ text-decoration: underline; }}
+    .item-row-meta {{
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }}
+    .item-row-qty {{
+      font-weight: 800;
+      white-space: nowrap;
+    }}
+    .item-row-actions {{
+      display: flex;
+      gap: 6px;
+      justify-content: flex-end;
+    }}
+    .item-row-actions .btn {{
+      padding: 6px 9px;
+    }}
     .item-title {{
       display: flex;
       align-items: start;
@@ -459,10 +560,21 @@ def page(title, body, base_path=""):
     @media (max-width: 680px) {{
       .bar {{ align-items: flex-start; flex-direction: column; }}
       nav {{ justify-content: flex-start; }}
+      .filters {{ grid-template-columns: 1fr; }}
       .form-grid {{ grid-template-columns: 1fr; }}
       .qty {{ font-size: 1.7rem; }}
       .item-card {{ grid-template-columns: 64px 1fr; }}
       .item-thumb {{ width: 64px; }}
+      .item-row {{
+        grid-template-columns: 44px minmax(0, 1fr) auto;
+      }}
+      .item-row-meta, .item-row-location {{
+        grid-column: 2 / -1;
+      }}
+      .item-row-actions {{
+        grid-column: 2 / -1;
+        justify-content: flex-start;
+      }}
     }}
   </style>
 </head>
@@ -508,6 +620,44 @@ def item_card(item):
       </div>
     </article>
     """
+
+
+def item_row(item):
+    low = '<span class="pill low">Lav</span>' if item["is_low"] else ""
+    thumb = f'<a href="item/{item["id"]}"><img class="item-row-thumb" src="{esc(item["image_url"])}" alt=""></a>' if item["image_url"] else '<div class="item-row-thumb" aria-hidden="true"></div>'
+    category = item["category"] or ("Forbruksvare" if item["kind"] == "consumable" else "Gjenstand")
+    location = item["location"] or "Uten plassering"
+    return f"""
+    <article class="item-row">
+      {thumb}
+      <div class="item-row-title">
+        <a href="item/{item['id']}">{esc(item['name'])}</a>
+        {low}
+      </div>
+      <div class="item-row-meta muted">{esc(location)}</div>
+      <div class="item-row-location muted">{esc(category)}</div>
+      <div class="item-row-qty">{fmt_num(item['quantity'])} <span class="muted">{esc(item['unit'])}</span></div>
+      <div class="item-row-actions">
+        <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn" title="Ta ut en">-1</button></form>
+        <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="1"><button class="btn" title="Legg til en">+1</button></form>
+      </div>
+    </article>
+    """
+
+
+def option_list(values, selected, placeholder):
+    options = [f'<option value="">{esc(placeholder)}</option>']
+    for value in values:
+        options.append(f'<option value="{esc(value)}" {"selected" if value == selected else ""}>{esc(value)}</option>')
+    return "".join(options)
+
+
+def query_link(params, **updates):
+    next_params = dict(params)
+    next_params.update(updates)
+    cleaned = {key: value for key, value in next_params.items() if value}
+    query = urlencode(cleaned)
+    return "." + (f"?{query}" if query else "")
 
 
 def item_form(item=None, tag_id=""):
@@ -636,20 +786,49 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("", "items"):
             query = parse_qs(urlparse(self.path).query)
             search = (query.get("q") or [""])[0].strip()
-            if search:
-                items = list_items(
-                    "name like ? or location like ? or category like ? or tag_id like ?",
-                    tuple([f"%{search}%"] * 4),
-                )
+            category = (query.get("category") or [""])[0].strip()
+            location = (query.get("location") or [""])[0].strip()
+            view = (query.get("view") or ["cards"])[0]
+            low_only = (query.get("low") or [""])[0] == "1"
+            where, params = build_item_filters(search, category, location, low_only)
+            items = list_items(where, params)
+            categories = distinct_values("category")
+            locations = distinct_values("location")
+            current_params = {"q": search, "category": category, "location": location, "low": "1" if low_only else "", "view": view}
+            card_url = query_link(current_params, view="cards")
+            list_url = query_link(current_params, view="list")
+            low_url = query_link(current_params, low="" if low_only else "1")
+            clear_url = query_link({"view": view})
+            if view == "list":
+                items_html = "".join(item_row(item) for item in items) or '<div class="card">Ingen varer passer filtrene.</div>'
+                items_html = f'<section class="item-list">{items_html}</section>'
             else:
-                items = list_items()
-            cards = "".join(item_card(item) for item in items) or '<div class="card">Ingen varer ennå.</div>'
+                items_html = "".join(item_card(item) for item in items) or '<div class="card">Ingen varer passer filtrene.</div>'
+                items_html = f'<section class="grid">{items_html}</section>'
             body = f"""
               <h1>Varer og ting</h1>
-              <form method="get" action="." class="stack" style="margin-bottom: 14px;">
-                <input name="q" value="{esc(search)}" placeholder="Søk etter navn, plassering, kategori eller tag">
+              <form method="get" action="." class="toolbar">
+                <input type="hidden" name="view" value="{esc(view)}">
+                <div class="filters">
+                  <label>Søk
+                    <input name="q" value="{esc(search)}" placeholder="Navn, lurt sted, kategori eller tag">
+                  </label>
+                  <label>Plassering
+                    <select name="location">{option_list(locations, location, "Alle steder")}</select>
+                  </label>
+                  <label>Kategori
+                    <select name="category">{option_list(categories, category, "Alle kategorier")}</select>
+                  </label>
+                  <button class="btn primary">Filtrer</button>
+                  <a class="btn" href="{clear_url}">Nullstill</a>
+                </div>
+                <div class="view-switch">
+                  <a class="btn {"active" if view != "list" else ""}" href="{card_url}">Kort</a>
+                  <a class="btn {"active" if view == "list" else ""}" href="{list_url}">Kompakt</a>
+                  <a class="btn {"active" if low_only else ""}" href="{low_url}">Lav beholdning</a>
+                </div>
               </form>
-              <section class="grid">{cards}</section>
+              {items_html}
             """
             self.send_html("Varer", body)
             return

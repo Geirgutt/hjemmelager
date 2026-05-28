@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.4 - Første hylle
+
+- La inn kompakt listevisning for store varelister.
+- La inn filter for plassering, kategori og lav beholdning på varelisten.
+
 ## 0.1.3 - Første hylle
 
 - Viser små varebilder i varelisten når varen har bilde.
