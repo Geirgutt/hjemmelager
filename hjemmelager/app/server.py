@@ -12,10 +12,12 @@ from urllib.parse import urlencode, parse_qs, unquote, urlparse
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "0.1.8"
+APP_VERSION = "0.2.0"
 APP_CODENAME = "Første hylle"
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
+APP_DIR = Path(__file__).resolve().parent
+STATIC_DIR = APP_DIR / "static"
 PORT = int(os.environ.get("HJEMMELAGER_PORT", "8099"))
 MAX_IMAGE_UPLOAD_BYTES = 1_500_000
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
@@ -41,8 +43,11 @@ def init_db():
                 name text not null,
                 kind text not null default 'consumable',
                 quantity real not null default 0,
+                opened_quantity real not null default 0,
                 unit text not null default 'stk',
                 min_quantity real not null default 0,
+                price real not null default 0,
+                best_before text not null default '',
                 location text not null default '',
                 category text not null default '',
                 tag_id text unique,
@@ -82,6 +87,12 @@ def init_db():
         columns = {row["name"] for row in conn.execute("pragma table_info(items)").fetchall()}
         if "barcode" not in columns:
             conn.execute("alter table items add column barcode text not null default ''")
+        if "opened_quantity" not in columns:
+            conn.execute("alter table items add column opened_quantity real not null default 0")
+        if "price" not in columns:
+            conn.execute("alter table items add column price real not null default 0")
+        if "best_before" not in columns:
+            conn.execute("alter table items add column best_before text not null default ''")
         for table, column in (("locations", "location"), ("categories", "category")):
             values = conn.execute(
                 f"select distinct trim({column}) as name from items where trim({column}) != ''"
@@ -208,6 +219,11 @@ def fmt_num(value):
     return str(int(value)) if value.is_integer() else f"{value:g}"
 
 
+def fmt_price(value):
+    value = float(value or 0)
+    return "" if value <= 0 else f"{value:.2f}".rstrip("0").rstrip(".")
+
+
 def image_value(data, existing=""):
     if data.get("remove_image"):
         return ""
@@ -289,6 +305,7 @@ def create_item(data):
     tag_id = (data.get("tag_id") or "").strip() or None
     barcode = (data.get("barcode") or "").strip()
     quantity = parse_float(data.get("quantity"))
+    opened_quantity = parse_float(data.get("opened_quantity"))
     location = registry_value(data, "location")
     category = registry_value(data, "category")
     with db() as conn:
@@ -297,16 +314,19 @@ def create_item(data):
         cur = conn.execute(
             """
             insert into items (
-                name, kind, quantity, unit, min_quantity, location, category, tag_id,
-                barcode, image_url, note, shopping_enabled, created_at, updated_at
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                name, kind, quantity, opened_quantity, unit, min_quantity, price, best_before,
+                location, category, tag_id, barcode, image_url, note, shopping_enabled, created_at, updated_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 (data.get("name") or "Uten navn").strip(),
                 data.get("kind") or "consumable",
                 quantity,
+                opened_quantity,
                 (data.get("unit") or "stk").strip(),
                 parse_float(data.get("min_quantity")),
+                parse_float(data.get("price")),
+                (data.get("best_before") or "").strip(),
                 location,
                 category,
                 tag_id,
@@ -338,7 +358,8 @@ def update_item(item_id, data):
         conn.execute(
             """
             update items set
-                name = ?, kind = ?, quantity = ?, unit = ?, min_quantity = ?,
+                name = ?, kind = ?, quantity = ?, opened_quantity = ?, unit = ?, min_quantity = ?,
+                price = ?, best_before = ?,
                 location = ?, category = ?, tag_id = ?, barcode = ?, image_url = ?, note = ?,
                 shopping_enabled = ?, updated_at = ?
             where id = ?
@@ -347,8 +368,11 @@ def update_item(item_id, data):
                 (data.get("name") or existing["name"]).strip(),
                 data.get("kind") or existing["kind"],
                 parse_float(data.get("quantity"), existing["quantity"]),
+                parse_float(data.get("opened_quantity"), existing["opened_quantity"]),
                 (data.get("unit") or existing["unit"]).strip(),
                 parse_float(data.get("min_quantity"), existing["min_quantity"]),
+                parse_float(data.get("price"), existing["price"]),
+                (data.get("best_before") or "").strip(),
                 location,
                 category,
                 tag_id,
@@ -375,6 +399,35 @@ def adjust_item(item_id, delta, note=""):
             (quantity, now(), item_id),
         )
         save_event(conn, item_id, "adjusted", delta, quantity, note)
+    return get_item(item_id)
+
+
+def adjust_opened_item(item_id, delta, note=""):
+    with db() as conn:
+        row = conn.execute("select * from items where id = ?", (item_id,)).fetchone()
+        if not row:
+            return None
+        opened_quantity = max(0, float(row["opened_quantity"]) + float(delta))
+        conn.execute(
+            "update items set opened_quantity = ?, updated_at = ? where id = ?",
+            (opened_quantity, now(), item_id),
+        )
+        save_event(conn, item_id, "opened_adjusted", delta, row["quantity"], note)
+    return get_item(item_id)
+
+
+def open_package(item_id, note=""):
+    with db() as conn:
+        row = conn.execute("select * from items where id = ?", (item_id,)).fetchone()
+        if not row:
+            return None
+        quantity = max(0, float(row["quantity"]) - 1)
+        opened_quantity = float(row["opened_quantity"]) + 1
+        conn.execute(
+            "update items set quantity = ?, opened_quantity = ?, updated_at = ? where id = ?",
+            (quantity, opened_quantity, now(), item_id),
+        )
+        save_event(conn, item_id, "package_opened", -1, quantity, note)
     return get_item(item_id)
 
 
@@ -698,6 +751,9 @@ def item_card(item):
     low = '<span class="pill low">Lav</span>' if item["is_low"] else ""
     meta = " · ".join(filter(None, [item["category"], item["location"]]))
     kind = "Forbruksvare" if item["kind"] == "consumable" else "Gjenstand"
+    price = f"Pris {fmt_price(item['price'])}" if fmt_price(item["price"]) else ""
+    best_before = f"Holdbar {item['best_before']}" if item["best_before"] else ""
+    meta = " · ".join(filter(None, [item["category"], item["location"], price, best_before]))
     thumb = f'<a href="item/{item["id"]}"><img class="item-thumb" src="{esc(item["image_url"])}" alt=""></a>' if item["image_url"] else '<div class="item-thumb" aria-hidden="true"></div>'
     return f"""
     <article class="card item-card">
@@ -708,11 +764,13 @@ def item_card(item):
           {low}
         </div>
         <div class="muted">{esc(kind)}{(" · " + esc(meta)) if meta else ""}</div>
-        <div class="qty">{fmt_num(item['quantity'])} <span class="muted">{esc(item['unit'])}</span></div>
+        <div class="qty">{fmt_num(item['quantity'])} <span class="muted">{esc(item['unit'])} nye</span></div>
+        <div class="muted">{fmt_num(item['opened_quantity'])} {esc(item['unit'])} åpne</div>
         <div class="actions">
           <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn" title="Ta ut en">-1</button></form>
           <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="1"><button class="btn" title="Legg til en">+1</button></form>
-          <a class="btn" href="item/{item['id']}">Åpne</a>
+          <form method="post" action="item/{item['id']}/open"><button class="btn" title="Flytt en fra nye til åpne">Åpne</button></form>
+          <a class="btn" href="item/{item['id']}">Detaljer</a>
         </div>
       </div>
     </article>
@@ -724,6 +782,7 @@ def item_row(item):
     thumb = f'<a href="item/{item["id"]}"><img class="item-row-thumb" src="{esc(item["image_url"])}" alt=""></a>' if item["image_url"] else '<div class="item-row-thumb" aria-hidden="true"></div>'
     category = item["category"] or ("Forbruksvare" if item["kind"] == "consumable" else "Gjenstand")
     location = item["location"] or "Uten plassering"
+    opened = f"{fmt_num(item['opened_quantity'])} åpne" if float(item["opened_quantity"] or 0) else ""
     return f"""
     <article class="item-row">
       {thumb}
@@ -733,10 +792,11 @@ def item_row(item):
       </div>
       <div class="item-row-meta muted">{esc(location)}</div>
       <div class="item-row-location muted">{esc(category)}</div>
-      <div class="item-row-qty">{fmt_num(item['quantity'])} <span class="muted">{esc(item['unit'])}</span></div>
+      <div class="item-row-qty">{fmt_num(item['quantity'])} <span class="muted">{esc(item['unit'])} nye</span>{f'<br><span class="muted">{esc(opened)}</span>' if opened else ''}</div>
       <div class="item-row-actions">
         <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn" title="Ta ut en">-1</button></form>
         <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="1"><button class="btn" title="Legg til en">+1</button></form>
+        <form method="post" action="item/{item['id']}/open"><button class="btn" title="Flytt en fra nye til åpne">Åpne</button></form>
       </div>
     </article>
     """
@@ -763,8 +823,11 @@ def item_form(item=None, tag_id="", barcode=""):
         "name": "",
         "kind": "consumable",
         "quantity": 0,
+        "opened_quantity": 0,
         "unit": "stk",
         "min_quantity": 0,
+        "price": 0,
+        "best_before": "",
         "location": "",
         "category": "",
         "tag_id": tag_id,
@@ -801,11 +864,20 @@ def item_form(item=None, tag_id="", barcode=""):
         <label>Antall
           <input name="quantity" type="number" step="0.01" value="{fmt_num(item['quantity'])}">
         </label>
+        <label>Åpne pakker
+          <input name="opened_quantity" type="number" step="0.01" value="{fmt_num(item['opened_quantity'])}">
+        </label>
         <label>Enhet
           <input name="unit" value="{esc(item['unit'])}" placeholder="stk, pk, meter">
         </label>
         <label>Minimum
           <input name="min_quantity" type="number" step="0.01" value="{fmt_num(item['min_quantity'])}">
+        </label>
+        <label>Pris
+          <input name="price" type="number" step="0.01" value="{esc(fmt_price(item['price']))}" placeholder="0.00">
+        </label>
+        <label>Holdbarhetsdato
+          <input name="best_before" type="date" value="{esc(item['best_before'])}">
         </label>
         <label>Ny kategori
           <input name="new_category" placeholder="Matvarer, kabler, verktøy">
@@ -863,24 +935,23 @@ def scan_page():
         </form>
       </div>
     </section>
+    <script src="static/zxing-browser.min.js"></script>
     <script>
       const video = document.getElementById('scanner-video');
       const statusEl = document.getElementById('scan-status');
       const startBtn = document.getElementById('start-scan');
       const stopBtn = document.getElementById('stop-scan');
-      let stream = null;
-      let detector = null;
-      let scanning = false;
+      let codeReader = null;
+      let scannerControls = null;
 
       function setStatus(text) {
         statusEl.textContent = text;
       }
 
       function stopScan() {
-        scanning = false;
-        if (stream) {
-          stream.getTracks().forEach((track) => track.stop());
-          stream = null;
+        if (scannerControls) {
+          scannerControls.stop();
+          scannerControls = null;
         }
         video.srcObject = null;
       }
@@ -892,50 +963,24 @@ def scan_page():
         window.location.href = 'scan/result?code=' + encodeURIComponent(code);
       }
 
-      async function makeDetector() {
-        if (!('BarcodeDetector' in window)) {
-          throw new Error('Denne nettleseren stotter ikke BarcodeDetector. Bruk manuell kode eller prov Chrome/Edge.');
-        }
-        const wanted = ['qr_code', 'ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'itf', 'data_matrix'];
-        let formats = wanted;
-        if (BarcodeDetector.getSupportedFormats) {
-          const supported = await BarcodeDetector.getSupportedFormats();
-          formats = wanted.filter((format) => supported.includes(format));
-        }
-        if (!formats.length) {
-          throw new Error('Ingen stottede kodeformater funnet i denne nettleseren.');
-        }
-        return new BarcodeDetector({ formats });
-      }
-
-      async function scanLoop() {
-        if (!scanning || !detector) return;
-        try {
-          if (video.readyState >= 2) {
-            const codes = await detector.detect(video);
-            if (codes.length) {
-              openCode(codes[0].rawValue);
-              return;
-            }
-          }
-        } catch (err) {
-          setStatus(err.message || 'Kunne ikke lese koden.');
-        }
-        requestAnimationFrame(scanLoop);
-      }
-
       async function startScan() {
         try {
-          detector = detector || await makeDetector();
-          stream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: { ideal: 'environment' } },
-            audio: false
-          });
-          video.srcObject = stream;
-          await video.play();
-          scanning = true;
+          if (!window.ZXingBrowser) {
+            throw new Error('ZXing-biblioteket ble ikke lastet. Sjekk nettverk eller bruk manuell kode.');
+          }
+          stopScan();
+          codeReader = codeReader || new ZXingBrowser.BrowserMultiFormatReader();
           setStatus('Ser etter QR-kode eller strekkode...');
-          requestAnimationFrame(scanLoop);
+          scannerControls = await codeReader.decodeFromVideoDevice(
+            null,
+            video,
+            (result, err, controls) => {
+              scannerControls = controls;
+              if (result) {
+                openCode(result.getText());
+              }
+            }
+          );
         } catch (err) {
           setStatus(err.message || 'Kunne ikke starte kamera.');
           stopScan();
@@ -1023,6 +1068,19 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def send_static(self, rel_path, content_type):
+        target = (STATIC_DIR / rel_path).resolve()
+        if not str(target).startswith(str(STATIC_DIR.resolve())) or not target.is_file():
+            self.send_html("Ikke funnet", "<h1>Ikke funnet</h1>", HTTPStatus.NOT_FOUND)
+            return
+        data = target.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "public, max-age=31536000")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def redirect(self, target):
         self.send_response(HTTPStatus.SEE_OTHER)
         self.send_header("Location", self.ingress_base() + "/" + target.lstrip("/"))
@@ -1030,6 +1088,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.route_path()
+        if path == "static/zxing-browser.min.js":
+            self.send_static("zxing-browser.min.js", "text/javascript; charset=utf-8")
+            return
+
         if path in ("", "items"):
             query = parse_qs(urlparse(self.path).query)
             search = (query.get("q") or [""])[0].strip()
@@ -1117,18 +1179,24 @@ class Handler(BaseHTTPRequestHandler):
                 low = '<span class="pill low">Lav beholdning</span>' if item["is_low"] else ""
                 tag_text = item["tag_id"] or "Ingen NFC-tag koblet"
                 barcode_text = item["barcode"] or "Ingen strekkode/QR-kode lagret"
+                price_text = fmt_price(item["price"]) or "Ikke satt"
+                best_before_text = item["best_before"] or "Ikke satt"
                 body = f"""
                   <div class="card">
                     {img}
                     <div class="item-title"><h1>{esc(item['name'])}</h1>{low}</div>
-                    <div class="qty">{fmt_num(item['quantity'])} <span class="muted">{esc(item['unit'])}</span></div>
+                    <div class="qty">{fmt_num(item['quantity'])} <span class="muted">{esc(item['unit'])} nye</span></div>
+                    <p class="muted">{fmt_num(item['opened_quantity'])} {esc(item['unit'])} åpne</p>
                     <p class="muted">{esc(item['category'])} {("· " + esc(item['location'])) if item['location'] else ""}</p>
+                    <p class="muted">Pris: {esc(price_text)} · Holdbarhetsdato: {esc(best_before_text)}</p>
                     <p class="muted">NFC: {esc(tag_text)}</p>
                     <p class="muted">Kode: {esc(barcode_text)}</p>
                     <p>{esc(item['note'])}</p>
                     <div class="actions">
                       <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn warn">-1</button></form>
                       <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="1"><button class="btn primary">+1</button></form>
+                      <form method="post" action="item/{item['id']}/open"><button class="btn">Åpne pakke</button></form>
+                      <form method="post" action="item/{item['id']}/adjust-opened"><input type="hidden" name="delta" value="-1"><button class="btn">Bruk åpen</button></form>
                       <a class="btn" href="item/{item['id']}/edit">Rediger</a>
                     </div>
                   </div>
@@ -1208,6 +1276,14 @@ class Handler(BaseHTTPRequestHandler):
                 adjust_item(int(parts[1]), parse_float(data.get("delta")), "web")
                 self.redirect(f"item/{parts[1]}")
                 return
+            if len(parts) == 3 and parts[2] == "open" and parts[1].isdigit():
+                open_package(int(parts[1]), "web")
+                self.redirect(f"item/{parts[1]}")
+                return
+            if len(parts) == 3 and parts[2] == "adjust-opened" and parts[1].isdigit():
+                adjust_opened_item(int(parts[1]), parse_float(data.get("delta")), "web")
+                self.redirect(f"item/{parts[1]}")
+                return
             if len(parts) == 3 and parts[2] == "edit" and parts[1].isdigit():
                 try:
                     item = update_item(int(parts[1]), data)
@@ -1224,6 +1300,20 @@ class Handler(BaseHTTPRequestHandler):
             parts = path.split("/")
             if len(parts) == 4 and parts[3] == "adjust" and parts[2].isdigit():
                 item = adjust_item(int(parts[2]), parse_float(data.get("delta")), data.get("note") or "api")
+                if not item:
+                    self.send_json({"error": "item not found"}, HTTPStatus.NOT_FOUND)
+                    return
+                self.send_json({"item": item})
+                return
+            if len(parts) == 4 and parts[3] == "open" and parts[2].isdigit():
+                item = open_package(int(parts[2]), data.get("note") or "api")
+                if not item:
+                    self.send_json({"error": "item not found"}, HTTPStatus.NOT_FOUND)
+                    return
+                self.send_json({"item": item})
+                return
+            if len(parts) == 4 and parts[3] == "adjust-opened" and parts[2].isdigit():
+                item = adjust_opened_item(int(parts[2]), parse_float(data.get("delta")), data.get("note") or "api")
                 if not item:
                     self.send_json({"error": "item not found"}, HTTPStatus.NOT_FOUND)
                     return

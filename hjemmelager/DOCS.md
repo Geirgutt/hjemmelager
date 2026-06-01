@@ -71,9 +71,9 @@ Dette registrerer scannen i Hjemmelager. Hvis taggen finnes, oppdateres “sist 
 
 ## Strekkode og QR
 
-Hjemmelager har en **Scan**-side som kan bruke mobilkamera til å lese QR-koder og strekkoder når nettleseren støtter `BarcodeDetector`.
+Hjemmelager har en **Scan**-side som kan bruke mobilkamera til å lese QR-koder og strekkoder. Scanneren bruker ZXing lokalt i nettleseren, samme bibliotekfamilie som Grocy bruker.
 
-Kamera i nettleseren krever normalt HTTPS. Bruk for eksempel Home Assistant Cloud / Nabu Casa, lokal HTTPS eller en reverse proxy med gyldig sertifikat. Hvis kamera eller `BarcodeDetector` ikke er tilgjengelig i nettleseren, kan koden skrives inn manuelt på samme side.
+Kamera i nettleseren krever normalt HTTPS. Bruk for eksempel Home Assistant Cloud / Nabu Casa, lokal HTTPS eller en reverse proxy med gyldig sertifikat. Hvis kamera ikke er tilgjengelig i nettleseren, kan koden skrives inn manuelt på samme side.
 
 Flyt:
 
@@ -85,6 +85,17 @@ Flyt:
 
 QR-koder som inneholder en Hjemmelager-vare-URL, for eksempel `/item/12`, åpner varen direkte.
 
+## Pris, holdbarhet og åpne pakker
+
+Varer kan ha pris og holdbarhetsdato. Datoen er et enkelt datofelt og brukes foreløpig som informasjon på varen.
+
+For forbruksvarer kan du skille mellom uåpnede varer på lager og åpne pakker:
+
+1. **Antall** er uåpnet lager, for eksempel `2 nye`.
+2. **Åpne pakker** er pakker som er åpnet og normalt ikke skal regnes som lager, for eksempel `1 åpen`.
+3. **Åpne pakke** flytter én fra uåpnet lager til åpne pakker.
+4. **Bruk åpen** reduserer antall åpne pakker.
+
 ## API
 
 Alle endepunkter bruker JSON.
@@ -95,6 +106,8 @@ GET  /api/items
 GET  /api/low-stock
 POST /api/items
 POST /api/items/{id}/adjust
+POST /api/items/{id}/open
+POST /api/items/{id}/adjust-opened
 POST /api/tag/{tag_id}/touch
 POST /api/tag/{tag_id}/adjust
 ```

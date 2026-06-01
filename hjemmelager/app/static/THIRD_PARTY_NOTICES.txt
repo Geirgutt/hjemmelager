@@ -1,0 +1,6 @@
+zxing-js/browser
+Source: https://github.com/zxing-js/browser
+Package: @zxing/browser 0.2.0
+License: MIT
+
+Used for client-side barcode and QR-code scanning.

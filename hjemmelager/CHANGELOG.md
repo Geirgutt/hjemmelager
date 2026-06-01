@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.0 - Første hylle
+
+- La inn pris og holdbarhetsdato på varer.
+- La inn egen telling for åpne pakker ved siden av uåpnet lager.
+- La inn handlingene **Åpne pakke** og **Bruk åpen**.
+
+## 0.1.9 - Første hylle
+
+- Byttet kamera-scanneren fra nettleserens `BarcodeDetector` til lokalt vendoret ZXing, samme bibliotekfamilie som Grocy bruker.
+- Scanner-siden fungerer nå i flere nettlesere og støtter både strekkoder og QR-koder uten CDN-avhengighet.
+
 ## 0.1.8 - Første hylle
 
 - Fjernet **Koble NFC-tag**-knappen og automatisk ventemodus for NFC-scans.
