@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.8 - Første hylle
+
+- Fjernet **Koble NFC-tag**-knappen og automatisk ventemodus for NFC-scans.
+- NFC kan fortsatt brukes ved å lime inn `tag_id` manuelt på varen og sette opp Home Assistant-automasjon selv.
+
+## 0.1.7 - Første hylle
+
+- La inn strekkode-/QR-felt på varer.
+- La inn **Scan**-side som kan lese QR-koder og strekkoder via kamera når nettleseren støtter det.
+- Scannede koder åpner kjent vare, eller starter ny vare med koden ferdig utfylt.
+
 ## 0.1.6 - Første hylle
 
 - La inn **Koble NFC-tag** på varesiden.

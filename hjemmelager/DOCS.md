@@ -32,21 +32,11 @@ Home Assistant krever at et add-on-repository har `repository.yaml` i roten, og 
 
 Home Assistant sin mobilapp kan lese NFC-tags. Når en tag scannes, fyrer Home Assistant eventen `tag_scanned` med en `tag_id`.
 
-### Enkel bruk uten automasjon
+### Manuell bruk
 
 1. Lag eller åpne en vare i Hjemmelager.
 2. Skriv inn NFC-tag-id i feltet **NFC tag-id**.
 3. Når taggen scannes i Home Assistant, kan du bruke automasjonen under for å sende scannen til Hjemmelager.
-
-### Koble tag fra varen
-
-Når automasjonen under er aktiv, kan du slippe manuell kopiering av `tag_id`:
-
-1. Åpne varen i Hjemmelager.
-2. Trykk **Koble NFC-tag**.
-3. Scan taggen med Home Assistant Companion App innen 2 minutter.
-
-Neste scan kobles da automatisk til varen. Hvis taggen allerede er koblet til en annen vare, svarer API-et med `409 Conflict`.
 
 ### REST-kommando i Home Assistant
 
@@ -79,7 +69,21 @@ action:
 
 Dette registrerer scannen i Hjemmelager. Hvis taggen finnes, oppdateres “sist scannet”. Hvis den ikke finnes, returnerer API-et `404`, og du kan opprette en vare med tag-id-en i web-UI.
 
-Hvis en vare nettopp er satt i **Koble NFC-tag**-modus, bruker samme endepunkt neste scan til å lagre `tag_id` på varen i stedet for å returnere `404`.
+## Strekkode og QR
+
+Hjemmelager har en **Scan**-side som kan bruke mobilkamera til å lese QR-koder og strekkoder når nettleseren støtter `BarcodeDetector`.
+
+Kamera i nettleseren krever normalt HTTPS. Bruk for eksempel Home Assistant Cloud / Nabu Casa, lokal HTTPS eller en reverse proxy med gyldig sertifikat. Hvis kamera eller `BarcodeDetector` ikke er tilgjengelig i nettleseren, kan koden skrives inn manuelt på samme side.
+
+Flyt:
+
+1. Åpne **Scan** fra toppmenyen.
+2. Trykk **Start kamera**.
+3. Scan QR-kode eller strekkode.
+4. Hvis koden finnes på en vare, åpnes varen.
+5. Hvis koden er ukjent, åpnes ny vare med koden ferdig utfylt.
+
+QR-koder som inneholder en Hjemmelager-vare-URL, for eksempel `/item/12`, åpner varen direkte.
 
 ## API
 
@@ -201,6 +205,6 @@ hjemmelager/DOCS.md          denne kontrollseksjonen
 
 1. Opprett lokasjoner som tekst, for eksempel `Bod > Hylle 2 > Boks A`.
 2. Legg NFC-tag på boksen, skuffen eller varen.
-3. Opprett varen i Hjemmelager og bruk **Koble NFC-tag**, eller fyll inn samme tag-id manuelt.
+3. Opprett varen i Hjemmelager og fyll inn NFC tag-id manuelt, eller legg inn strekkode/QR-kode.
 4. Bruk `+1`, `-1` og `Sett antall` fra mobilvisningen.
 5. Bruk **Lav beholdning** som enkel handleliste-kilde.

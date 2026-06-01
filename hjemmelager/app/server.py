@@ -4,7 +4,6 @@ import html
 import json
 import os
 import sqlite3
-import threading
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -13,16 +12,13 @@ from urllib.parse import urlencode, parse_qs, unquote, urlparse
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "0.1.6"
+APP_VERSION = "0.1.8"
 APP_CODENAME = "Første hylle"
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
 PORT = int(os.environ.get("HJEMMELAGER_PORT", "8099"))
 MAX_IMAGE_UPLOAD_BYTES = 1_500_000
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
-PENDING_TAG_LINK_SECONDS = 120
-PENDING_TAG_LINK = {}
-PENDING_TAG_LINK_LOCK = threading.Lock()
 
 
 def now():
@@ -50,6 +46,7 @@ def init_db():
                 location text not null default '',
                 category text not null default '',
                 tag_id text unique,
+                barcode text not null default '',
                 image_url text not null default '',
                 note text not null default '',
                 shopping_enabled integer not null default 1,
@@ -82,6 +79,9 @@ def init_db():
             );
             """
         )
+        columns = {row["name"] for row in conn.execute("pragma table_info(items)").fetchall()}
+        if "barcode" not in columns:
+            conn.execute("alter table items add column barcode text not null default ''")
         for table, column in (("locations", "location"), ("categories", "category")):
             values = conn.execute(
                 f"select distinct trim({column}) as name from items where trim({column}) != ''"
@@ -161,8 +161,8 @@ def build_item_filters(search="", category="", location="", low_only=False):
     clauses = []
     params = []
     if search:
-        clauses.append("(name like ? or location like ? or category like ? or tag_id like ? or note like ?)")
-        params.extend([f"%{search}%"] * 5)
+        clauses.append("(name like ? or location like ? or category like ? or tag_id like ? or barcode like ? or note like ?)")
+        params.extend([f"%{search}%"] * 6)
     if category:
         clauses.append("category = ?")
         params.append(category)
@@ -186,54 +186,10 @@ def get_item_by_tag(tag_id):
     return row_to_item(row) if row else None
 
 
-def begin_tag_link(item_id):
-    item = get_item(item_id)
-    if not item:
-        return None
-    with PENDING_TAG_LINK_LOCK:
-        PENDING_TAG_LINK.clear()
-        PENDING_TAG_LINK.update({"item_id": item_id, "expires_at": now() + PENDING_TAG_LINK_SECONDS})
-    return item
-
-
-def pending_tag_link():
-    with PENDING_TAG_LINK_LOCK:
-        if not PENDING_TAG_LINK:
-            return None
-        if PENDING_TAG_LINK["expires_at"] < now():
-            PENDING_TAG_LINK.clear()
-            return None
-        return dict(PENDING_TAG_LINK)
-
-
-def clear_pending_tag_link():
-    with PENDING_TAG_LINK_LOCK:
-        PENDING_TAG_LINK.clear()
-
-
-def link_tag_to_pending_item(tag_id):
-    pending = pending_tag_link()
-    if not pending:
-        return None
-
-    item = get_item(pending["item_id"])
-    if not item:
-        clear_pending_tag_link()
-        return None
-
-    existing = get_item_by_tag(tag_id)
-    if existing and existing["id"] != item["id"]:
-        raise ValueError(f"Taggen er allerede koblet til {existing['name']}")
-
-    timestamp = now()
+def get_item_by_barcode(barcode):
     with db() as conn:
-        conn.execute(
-            "update items set tag_id = ?, last_scanned_at = ?, updated_at = ? where id = ?",
-            (tag_id, timestamp, timestamp, item["id"]),
-        )
-        save_event(conn, item["id"], "tag_linked", None, item["quantity"], tag_id)
-    clear_pending_tag_link()
-    return get_item(item["id"])
+        row = conn.execute("select * from items where barcode = ?", (barcode,)).fetchone()
+    return row_to_item(row) if row else None
 
 
 def parse_float(value, fallback=0.0):
@@ -331,6 +287,7 @@ def save_event(conn, item_id, action, delta=None, quantity_after=None, note=""):
 def create_item(data):
     timestamp = now()
     tag_id = (data.get("tag_id") or "").strip() or None
+    barcode = (data.get("barcode") or "").strip()
     quantity = parse_float(data.get("quantity"))
     location = registry_value(data, "location")
     category = registry_value(data, "category")
@@ -341,8 +298,8 @@ def create_item(data):
             """
             insert into items (
                 name, kind, quantity, unit, min_quantity, location, category, tag_id,
-                image_url, note, shopping_enabled, created_at, updated_at
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                barcode, image_url, note, shopping_enabled, created_at, updated_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 (data.get("name") or "Uten navn").strip(),
@@ -353,6 +310,7 @@ def create_item(data):
                 location,
                 category,
                 tag_id,
+                barcode,
                 image_value(data),
                 (data.get("note") or "").strip(),
                 1 if str(data.get("shopping_enabled", "1")).lower() in ("1", "true", "on", "yes") else 0,
@@ -371,6 +329,7 @@ def update_item(item_id, data):
         return None
     timestamp = now()
     tag_id = (data.get("tag_id") or "").strip() or None
+    barcode = (data.get("barcode") or "").strip()
     location = registry_value(data, "location")
     category = registry_value(data, "category")
     with db() as conn:
@@ -380,7 +339,7 @@ def update_item(item_id, data):
             """
             update items set
                 name = ?, kind = ?, quantity = ?, unit = ?, min_quantity = ?,
-                location = ?, category = ?, tag_id = ?, image_url = ?, note = ?,
+                location = ?, category = ?, tag_id = ?, barcode = ?, image_url = ?, note = ?,
                 shopping_enabled = ?, updated_at = ?
             where id = ?
             """,
@@ -393,6 +352,7 @@ def update_item(item_id, data):
                 location,
                 category,
                 tag_id,
+                barcode,
                 image_value(data, existing["image_url"]),
                 (data.get("note") or "").strip(),
                 1 if str(data.get("shopping_enabled", "1")).lower() in ("1", "true", "on", "yes") else 0,
@@ -429,6 +389,33 @@ def touch_tag(tag_id):
         )
         save_event(conn, item["id"], "tag_scanned", None, item["quantity"], tag_id)
     return get_item(item["id"])
+
+
+def item_id_from_scanned_url(code):
+    parsed = urlparse(code)
+    if not parsed.scheme:
+        return None
+    parts = [part for part in parsed.path.split("/") if part]
+    for index, part in enumerate(parts):
+        if part == "item" and index + 1 < len(parts) and parts[index + 1].isdigit():
+            return int(parts[index + 1])
+    return None
+
+
+def scanned_code_redirect(code):
+    code = (code or "").strip()
+    if not code:
+        return "scan"
+
+    item_id = item_id_from_scanned_url(code)
+    if item_id and get_item(item_id):
+        return f"item/{item_id}"
+
+    item = get_item_by_barcode(code)
+    if item:
+        return f"item/{item['id']}"
+
+    return "new?" + urlencode({"barcode": code})
 
 
 def page(title, body, base_path=""):
@@ -635,12 +622,13 @@ def page(title, body, base_path=""):
       white-space: nowrap;
     }}
     .low {{ border-color: #f59e0b; color: #92400e; background: #fef3c7; }}
-    .notice {{
-      border: 1px solid var(--accent);
+    .scanner {{
+      width: 100%;
+      aspect-ratio: 4 / 3;
       border-radius: 8px;
-      background: color-mix(in srgb, var(--accent) 10%, var(--panel));
-      padding: 10px 12px;
-      margin-bottom: 12px;
+      border: 1px solid var(--line);
+      background: #050608;
+      object-fit: cover;
     }}
     .qty {{ font-size: 2rem; font-weight: 800; margin: 8px 0; }}
     .actions {{ display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }}
@@ -691,6 +679,7 @@ def page(title, body, base_path=""):
       <a class="brand" href=".">{APP_NAME}</a>
       <nav>
         <a class="nav" href=".">Varer</a>
+        <a class="nav" href="scan">Scan</a>
         <a class="nav" href="low-stock">Lav beholdning</a>
         <a class="nav" href="organize">Steder</a>
         <a class="nav primary" href="new">Ny</a>
@@ -768,7 +757,7 @@ def query_link(params, **updates):
     return "." + (f"?{query}" if query else "")
 
 
-def item_form(item=None, tag_id=""):
+def item_form(item=None, tag_id="", barcode=""):
     item = item or {
         "id": None,
         "name": "",
@@ -779,6 +768,7 @@ def item_form(item=None, tag_id=""):
         "location": "",
         "category": "",
         "tag_id": tag_id,
+        "barcode": barcode,
         "image_url": "",
         "note": "",
         "shopping_enabled": 1,
@@ -829,6 +819,9 @@ def item_form(item=None, tag_id=""):
         <label class="full">NFC tag-id
           <input name="tag_id" value="{esc(item['tag_id'] or '')}" placeholder="tag_id fra Home Assistant">
         </label>
+        <label class="full">Strekkode eller QR-kode
+          <input name="barcode" value="{esc(item['barcode'] or '')}" placeholder="EAN, UPC, QR-tekst eller annen kode">
+        </label>
         <label class="full">Bilde-URL
           <input name="image_url" value="{esc(image_url)}" placeholder="valgfritt">
         </label>
@@ -848,6 +841,110 @@ def item_form(item=None, tag_id=""):
         <a class="btn" href=".">Avbryt</a>
       </div>
     </form>
+    """
+
+
+def scan_page():
+    return """
+    <section class="stack">
+      <h1>Scan kode</h1>
+      <div class="card stack">
+        <video id="scanner-video" class="scanner" playsinline muted></video>
+        <div class="actions">
+          <button id="start-scan" class="btn primary" type="button">Start kamera</button>
+          <button id="stop-scan" class="btn" type="button">Stopp</button>
+        </div>
+        <p id="scan-status" class="muted">Kamera krever HTTPS, for eksempel via Home Assistant Cloud.</p>
+        <form class="stack" method="get" action="scan/result">
+          <label>Manuell kode
+            <input name="code" autocomplete="off" inputmode="text" placeholder="Lim inn eller skriv strekkode/QR-kode">
+          </label>
+          <button class="btn">Sok kode</button>
+        </form>
+      </div>
+    </section>
+    <script>
+      const video = document.getElementById('scanner-video');
+      const statusEl = document.getElementById('scan-status');
+      const startBtn = document.getElementById('start-scan');
+      const stopBtn = document.getElementById('stop-scan');
+      let stream = null;
+      let detector = null;
+      let scanning = false;
+
+      function setStatus(text) {
+        statusEl.textContent = text;
+      }
+
+      function stopScan() {
+        scanning = false;
+        if (stream) {
+          stream.getTracks().forEach((track) => track.stop());
+          stream = null;
+        }
+        video.srcObject = null;
+      }
+
+      function openCode(rawCode) {
+        const code = (rawCode || '').trim();
+        if (!code) return;
+        stopScan();
+        window.location.href = 'scan/result?code=' + encodeURIComponent(code);
+      }
+
+      async function makeDetector() {
+        if (!('BarcodeDetector' in window)) {
+          throw new Error('Denne nettleseren stotter ikke BarcodeDetector. Bruk manuell kode eller prov Chrome/Edge.');
+        }
+        const wanted = ['qr_code', 'ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'itf', 'data_matrix'];
+        let formats = wanted;
+        if (BarcodeDetector.getSupportedFormats) {
+          const supported = await BarcodeDetector.getSupportedFormats();
+          formats = wanted.filter((format) => supported.includes(format));
+        }
+        if (!formats.length) {
+          throw new Error('Ingen stottede kodeformater funnet i denne nettleseren.');
+        }
+        return new BarcodeDetector({ formats });
+      }
+
+      async function scanLoop() {
+        if (!scanning || !detector) return;
+        try {
+          if (video.readyState >= 2) {
+            const codes = await detector.detect(video);
+            if (codes.length) {
+              openCode(codes[0].rawValue);
+              return;
+            }
+          }
+        } catch (err) {
+          setStatus(err.message || 'Kunne ikke lese koden.');
+        }
+        requestAnimationFrame(scanLoop);
+      }
+
+      async function startScan() {
+        try {
+          detector = detector || await makeDetector();
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { ideal: 'environment' } },
+            audio: false
+          });
+          video.srcObject = stream;
+          await video.play();
+          scanning = true;
+          setStatus('Ser etter QR-kode eller strekkode...');
+          requestAnimationFrame(scanLoop);
+        } catch (err) {
+          setStatus(err.message || 'Kunne ikke starte kamera.');
+          stopScan();
+        }
+      }
+
+      startBtn.addEventListener('click', startScan);
+      stopBtn.addEventListener('click', stopScan);
+    </script>
     """
 
 
@@ -961,7 +1058,7 @@ class Handler(BaseHTTPRequestHandler):
                 <input type="hidden" name="view" value="{esc(view)}">
                 <div class="filters">
                   <label>Søk
-                    <input name="q" value="{esc(search)}" placeholder="Navn, lurt sted, kategori eller tag">
+                    <input name="q" value="{esc(search)}" placeholder="Navn, lurt sted, kategori, tag eller kode">
                   </label>
                   <label>Plassering
                     <select name="location">{option_list(locations, location, "Alle steder")}</select>
@@ -984,8 +1081,19 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "new":
-            tag_id = (parse_qs(urlparse(self.path).query).get("tag_id") or [""])[0]
-            self.send_html("Ny vare", f"<h1>Ny vare</h1>{item_form(tag_id=tag_id)}")
+            query = parse_qs(urlparse(self.path).query)
+            tag_id = (query.get("tag_id") or [""])[0]
+            barcode = (query.get("barcode") or [""])[0]
+            self.send_html("Ny vare", f"<h1>Ny vare</h1>{item_form(tag_id=tag_id, barcode=barcode)}")
+            return
+
+        if path == "scan":
+            self.send_html("Scan kode", scan_page())
+            return
+
+        if path == "scan/result":
+            code = (parse_qs(urlparse(self.path).query).get("code") or [""])[0]
+            self.redirect(scanned_code_redirect(code))
             return
 
         if path == "organize":
@@ -1005,29 +1113,22 @@ class Handler(BaseHTTPRequestHandler):
                 if not item:
                     self.send_html("Ikke funnet", "<h1>Ikke funnet</h1>", HTTPStatus.NOT_FOUND)
                     return
-                query = parse_qs(urlparse(self.path).query)
-                waiting = (query.get("link_tag") or [""])[0] == "1"
-                notice = (
-                    '<div class="notice"><strong>Klar for NFC.</strong> Scan taggen med Home Assistant-appen innen 2 minutter, '
-                    'sa kobles den automatisk til denne varen.</div>'
-                    if waiting else ""
-                )
                 img = f'<img src="{esc(item["image_url"])}" alt="" style="max-width: 100%; border-radius: 8px; margin-bottom: 12px;">' if item["image_url"] else ""
                 low = '<span class="pill low">Lav beholdning</span>' if item["is_low"] else ""
                 tag_text = item["tag_id"] or "Ingen NFC-tag koblet"
+                barcode_text = item["barcode"] or "Ingen strekkode/QR-kode lagret"
                 body = f"""
                   <div class="card">
-                    {notice}
                     {img}
                     <div class="item-title"><h1>{esc(item['name'])}</h1>{low}</div>
                     <div class="qty">{fmt_num(item['quantity'])} <span class="muted">{esc(item['unit'])}</span></div>
                     <p class="muted">{esc(item['category'])} {("· " + esc(item['location'])) if item['location'] else ""}</p>
                     <p class="muted">NFC: {esc(tag_text)}</p>
+                    <p class="muted">Kode: {esc(barcode_text)}</p>
                     <p>{esc(item['note'])}</p>
                     <div class="actions">
                       <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn warn">-1</button></form>
                       <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="1"><button class="btn primary">+1</button></form>
-                      <form method="post" action="item/{item['id']}/link-tag"><button class="btn">Koble NFC-tag</button></form>
                       <a class="btn" href="item/{item['id']}/edit">Rediger</a>
                     </div>
                   </div>
@@ -1107,13 +1208,6 @@ class Handler(BaseHTTPRequestHandler):
                 adjust_item(int(parts[1]), parse_float(data.get("delta")), "web")
                 self.redirect(f"item/{parts[1]}")
                 return
-            if len(parts) == 3 and parts[2] == "link-tag" and parts[1].isdigit():
-                item = begin_tag_link(int(parts[1]))
-                if not item:
-                    self.send_html("Ikke funnet", "<h1>Ikke funnet</h1>", HTTPStatus.NOT_FOUND)
-                    return
-                self.redirect(f"item/{item['id']}?link_tag=1")
-                return
             if len(parts) == 3 and parts[2] == "edit" and parts[1].isdigit():
                 try:
                     item = update_item(int(parts[1]), data)
@@ -1142,14 +1236,6 @@ class Handler(BaseHTTPRequestHandler):
                 tag_id = parts[2]
                 action = parts[3]
                 if action == "touch":
-                    try:
-                        linked_item = link_tag_to_pending_item(tag_id)
-                    except ValueError as exc:
-                        self.send_json({"error": str(exc), "tag_id": tag_id}, HTTPStatus.CONFLICT)
-                        return
-                    if linked_item:
-                        self.send_json({"item": linked_item, "status": "linked"})
-                        return
                     item = touch_tag(tag_id)
                     if not item:
                         self.send_json({"error": "tag not found", "tag_id": tag_id, "create_path": f"new?tag_id={tag_id}"}, HTTPStatus.NOT_FOUND)
