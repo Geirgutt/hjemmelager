@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.6 - Første hylle
+
+- La inn **Koble NFC-tag** på varesiden.
+- Neste Home Assistant `tag_scanned` kan nå automatisk kobles til valgt vare via eksisterende `/api/tag/{tag_id}/touch`-flyt.
+
 ## 0.1.5 - Første hylle
 
 - La inn egne registre for plasseringer og kategorier.

@@ -38,6 +38,16 @@ Home Assistant sin mobilapp kan lese NFC-tags. Når en tag scannes, fyrer Home A
 2. Skriv inn NFC-tag-id i feltet **NFC tag-id**.
 3. Når taggen scannes i Home Assistant, kan du bruke automasjonen under for å sende scannen til Hjemmelager.
 
+### Koble tag fra varen
+
+Når automasjonen under er aktiv, kan du slippe manuell kopiering av `tag_id`:
+
+1. Åpne varen i Hjemmelager.
+2. Trykk **Koble NFC-tag**.
+3. Scan taggen med Home Assistant Companion App innen 2 minutter.
+
+Neste scan kobles da automatisk til varen. Hvis taggen allerede er koblet til en annen vare, svarer API-et med `409 Conflict`.
+
 ### REST-kommando i Home Assistant
 
 Legg dette i `configuration.yaml`:
@@ -68,6 +78,8 @@ action:
 ```
 
 Dette registrerer scannen i Hjemmelager. Hvis taggen finnes, oppdateres “sist scannet”. Hvis den ikke finnes, returnerer API-et `404`, og du kan opprette en vare med tag-id-en i web-UI.
+
+Hvis en vare nettopp er satt i **Koble NFC-tag**-modus, bruker samme endepunkt neste scan til å lagre `tag_id` på varen i stedet for å returnere `404`.
 
 ## API
 
@@ -189,6 +201,6 @@ hjemmelager/DOCS.md          denne kontrollseksjonen
 
 1. Opprett lokasjoner som tekst, for eksempel `Bod > Hylle 2 > Boks A`.
 2. Legg NFC-tag på boksen, skuffen eller varen.
-3. Opprett varen i Hjemmelager og fyll inn samme tag-id.
+3. Opprett varen i Hjemmelager og bruk **Koble NFC-tag**, eller fyll inn samme tag-id manuelt.
 4. Bruk `+1`, `-1` og `Sett antall` fra mobilvisningen.
 5. Bruk **Lav beholdning** som enkel handleliste-kilde.

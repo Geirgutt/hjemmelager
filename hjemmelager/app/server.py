@@ -4,6 +4,7 @@ import html
 import json
 import os
 import sqlite3
+import threading
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -12,13 +13,16 @@ from urllib.parse import urlencode, parse_qs, unquote, urlparse
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "0.1.5"
+APP_VERSION = "0.1.6"
 APP_CODENAME = "Første hylle"
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
 PORT = int(os.environ.get("HJEMMELAGER_PORT", "8099"))
 MAX_IMAGE_UPLOAD_BYTES = 1_500_000
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+PENDING_TAG_LINK_SECONDS = 120
+PENDING_TAG_LINK = {}
+PENDING_TAG_LINK_LOCK = threading.Lock()
 
 
 def now():
@@ -180,6 +184,56 @@ def get_item_by_tag(tag_id):
     with db() as conn:
         row = conn.execute("select * from items where tag_id = ?", (tag_id,)).fetchone()
     return row_to_item(row) if row else None
+
+
+def begin_tag_link(item_id):
+    item = get_item(item_id)
+    if not item:
+        return None
+    with PENDING_TAG_LINK_LOCK:
+        PENDING_TAG_LINK.clear()
+        PENDING_TAG_LINK.update({"item_id": item_id, "expires_at": now() + PENDING_TAG_LINK_SECONDS})
+    return item
+
+
+def pending_tag_link():
+    with PENDING_TAG_LINK_LOCK:
+        if not PENDING_TAG_LINK:
+            return None
+        if PENDING_TAG_LINK["expires_at"] < now():
+            PENDING_TAG_LINK.clear()
+            return None
+        return dict(PENDING_TAG_LINK)
+
+
+def clear_pending_tag_link():
+    with PENDING_TAG_LINK_LOCK:
+        PENDING_TAG_LINK.clear()
+
+
+def link_tag_to_pending_item(tag_id):
+    pending = pending_tag_link()
+    if not pending:
+        return None
+
+    item = get_item(pending["item_id"])
+    if not item:
+        clear_pending_tag_link()
+        return None
+
+    existing = get_item_by_tag(tag_id)
+    if existing and existing["id"] != item["id"]:
+        raise ValueError(f"Taggen er allerede koblet til {existing['name']}")
+
+    timestamp = now()
+    with db() as conn:
+        conn.execute(
+            "update items set tag_id = ?, last_scanned_at = ?, updated_at = ? where id = ?",
+            (tag_id, timestamp, timestamp, item["id"]),
+        )
+        save_event(conn, item["id"], "tag_linked", None, item["quantity"], tag_id)
+    clear_pending_tag_link()
+    return get_item(item["id"])
 
 
 def parse_float(value, fallback=0.0):
@@ -581,6 +635,13 @@ def page(title, body, base_path=""):
       white-space: nowrap;
     }}
     .low {{ border-color: #f59e0b; color: #92400e; background: #fef3c7; }}
+    .notice {{
+      border: 1px solid var(--accent);
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+      padding: 10px 12px;
+      margin-bottom: 12px;
+    }}
     .qty {{ font-size: 2rem; font-weight: 800; margin: 8px 0; }}
     .actions {{ display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }}
     form.stack, .stack {{ display: grid; gap: 12px; }}
@@ -944,18 +1005,29 @@ class Handler(BaseHTTPRequestHandler):
                 if not item:
                     self.send_html("Ikke funnet", "<h1>Ikke funnet</h1>", HTTPStatus.NOT_FOUND)
                     return
+                query = parse_qs(urlparse(self.path).query)
+                waiting = (query.get("link_tag") or [""])[0] == "1"
+                notice = (
+                    '<div class="notice"><strong>Klar for NFC.</strong> Scan taggen med Home Assistant-appen innen 2 minutter, '
+                    'sa kobles den automatisk til denne varen.</div>'
+                    if waiting else ""
+                )
                 img = f'<img src="{esc(item["image_url"])}" alt="" style="max-width: 100%; border-radius: 8px; margin-bottom: 12px;">' if item["image_url"] else ""
                 low = '<span class="pill low">Lav beholdning</span>' if item["is_low"] else ""
+                tag_text = item["tag_id"] or "Ingen NFC-tag koblet"
                 body = f"""
                   <div class="card">
+                    {notice}
                     {img}
                     <div class="item-title"><h1>{esc(item['name'])}</h1>{low}</div>
                     <div class="qty">{fmt_num(item['quantity'])} <span class="muted">{esc(item['unit'])}</span></div>
                     <p class="muted">{esc(item['category'])} {("· " + esc(item['location'])) if item['location'] else ""}</p>
+                    <p class="muted">NFC: {esc(tag_text)}</p>
                     <p>{esc(item['note'])}</p>
                     <div class="actions">
                       <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn warn">-1</button></form>
                       <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="1"><button class="btn primary">+1</button></form>
+                      <form method="post" action="item/{item['id']}/link-tag"><button class="btn">Koble NFC-tag</button></form>
                       <a class="btn" href="item/{item['id']}/edit">Rediger</a>
                     </div>
                   </div>
@@ -1035,6 +1107,13 @@ class Handler(BaseHTTPRequestHandler):
                 adjust_item(int(parts[1]), parse_float(data.get("delta")), "web")
                 self.redirect(f"item/{parts[1]}")
                 return
+            if len(parts) == 3 and parts[2] == "link-tag" and parts[1].isdigit():
+                item = begin_tag_link(int(parts[1]))
+                if not item:
+                    self.send_html("Ikke funnet", "<h1>Ikke funnet</h1>", HTTPStatus.NOT_FOUND)
+                    return
+                self.redirect(f"item/{item['id']}?link_tag=1")
+                return
             if len(parts) == 3 and parts[2] == "edit" and parts[1].isdigit():
                 try:
                     item = update_item(int(parts[1]), data)
@@ -1063,6 +1142,14 @@ class Handler(BaseHTTPRequestHandler):
                 tag_id = parts[2]
                 action = parts[3]
                 if action == "touch":
+                    try:
+                        linked_item = link_tag_to_pending_item(tag_id)
+                    except ValueError as exc:
+                        self.send_json({"error": str(exc), "tag_id": tag_id}, HTTPStatus.CONFLICT)
+                        return
+                    if linked_item:
+                        self.send_json({"item": linked_item, "status": "linked"})
+                        return
                     item = touch_tag(tag_id)
                     if not item:
                         self.send_json({"error": "tag not found", "tag_id": tag_id, "create_path": f"new?tag_id={tag_id}"}, HTTPStatus.NOT_FOUND)
