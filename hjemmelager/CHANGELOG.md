@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 - Første hylle
+
+- La inn diagnostikk på Scan-siden for HTTPS, nettleser-API-er, ZXing og valgte kameraenheter.
+- Gjorde kameraoppstart mer robust i Home Assistant ved å be om kameratilgang før enhetsvalg når nettleseren skjuler kameranavn.
+- Foretrekker bak-/miljøkamera på mobil og stopper scanneren straks en kode er lest.
+
 ## 0.2.0 - Første hylle
 
 - La inn pris og holdbarhetsdato på varer.

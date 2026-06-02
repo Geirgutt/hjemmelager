@@ -12,7 +12,7 @@ from urllib.parse import urlencode, parse_qs, unquote, urlparse
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.2.1"
 APP_CODENAME = "Første hylle"
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
@@ -683,6 +683,26 @@ def page(title, body, base_path=""):
       background: #050608;
       object-fit: cover;
     }}
+    .scanner-diagnostics {{
+      display: grid;
+      grid-template-columns: minmax(140px, max-content) minmax(0, 1fr);
+      gap: 6px 10px;
+      margin: 0;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--line) 18%, transparent);
+      font-size: .9rem;
+    }}
+    .scanner-diagnostics dt {{
+      color: var(--muted);
+      font-weight: 650;
+    }}
+    .scanner-diagnostics dd {{
+      margin: 0;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }}
     .qty {{ font-size: 2rem; font-weight: 800; margin: 8px 0; }}
     .actions {{ display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }}
     form.stack, .stack {{ display: grid; gap: 12px; }}
@@ -927,6 +947,7 @@ def scan_page():
           <button id="stop-scan" class="btn" type="button">Stopp</button>
         </div>
         <p id="scan-status" class="muted">Kamera krever HTTPS, for eksempel via Home Assistant Cloud.</p>
+        <dl id="scanner-diagnostics" class="scanner-diagnostics" aria-live="polite"></dl>
         <form class="stack" method="get" action="scan/result">
           <label>Manuell kode
             <input name="code" autocomplete="off" inputmode="text" placeholder="Lim inn eller skriv strekkode/QR-kode">
@@ -943,9 +964,53 @@ def scan_page():
       const stopBtn = document.getElementById('stop-scan');
       let codeReader = null;
       let scannerControls = null;
+      let hasScanned = false;
+      const diagnosticsEl = document.getElementById('scanner-diagnostics');
+      const diagnostics = {
+        secureContext: window.isSecureContext,
+        mediaDevices: !!navigator.mediaDevices,
+        getUserMedia: !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
+        zxingLoaded: !!window.ZXingBrowser,
+        videoInputCount: 0,
+        selectedCamera: 'Ikke valgt',
+        selectedDeviceId: '',
+        lastError: 'Ingen'
+      };
+      const diagnosticLabels = {
+        secureContext: 'window.isSecureContext',
+        mediaDevices: 'navigator.mediaDevices',
+        getUserMedia: 'navigator.mediaDevices.getUserMedia',
+        zxingLoaded: 'ZXingBrowser loaded',
+        videoInputCount: 'Video input devices',
+        selectedCamera: 'Valgt kamera',
+        selectedDeviceId: 'Valgt deviceId',
+        lastError: 'Siste feil'
+      };
 
       function setStatus(text) {
         statusEl.textContent = text;
+      }
+
+      function setLastError(message) {
+        diagnostics.lastError = message || 'Ingen';
+        renderDiagnostics();
+      }
+
+      function formatDiagnosticValue(value) {
+        if (typeof value === 'boolean') return value ? 'ja' : 'nei';
+        return value || '-';
+      }
+
+      function renderDiagnostics() {
+        diagnostics.zxingLoaded = !!window.ZXingBrowser;
+        diagnosticsEl.replaceChildren();
+        for (const key of Object.keys(diagnosticLabels)) {
+          const term = document.createElement('dt');
+          const detail = document.createElement('dd');
+          term.textContent = diagnosticLabels[key];
+          detail.textContent = formatDiagnosticValue(diagnostics[key]);
+          diagnosticsEl.append(term, detail);
+        }
       }
 
       function stopScan() {
@@ -953,42 +1018,108 @@ def scan_page():
           scannerControls.stop();
           scannerControls = null;
         }
+        if (video.srcObject) {
+          for (const track of video.srcObject.getTracks()) {
+            track.stop();
+          }
+        }
         video.srcObject = null;
       }
 
       function openCode(rawCode) {
         const code = (rawCode || '').trim();
         if (!code) return;
+        if (hasScanned) return;
+        hasScanned = true;
+        setStatus('Kode lest');
         stopScan();
         window.location.href = 'scan/result?code=' + encodeURIComponent(code);
+      }
+
+      async function requestCameraPermission() {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' } },
+          audio: false
+        });
+        for (const track of stream.getTracks()) {
+          track.stop();
+        }
+      }
+
+      async function getVideoInputs() {
+        let devices = await navigator.mediaDevices.enumerateDevices();
+        let videoInputs = devices.filter((device) => device.kind === 'videoinput');
+        if (videoInputs.length && videoInputs.every((device) => !device.label)) {
+          await requestCameraPermission();
+          devices = await navigator.mediaDevices.enumerateDevices();
+          videoInputs = devices.filter((device) => device.kind === 'videoinput');
+        }
+        diagnostics.videoInputCount = videoInputs.length;
+        renderDiagnostics();
+        return videoInputs;
+      }
+
+      function chooseCamera(videoInputs) {
+        const rearWords = ['back', 'rear', 'environment', 'bak'];
+        const rearCamera = videoInputs.find((device) => {
+          const label = (device.label || '').toLowerCase();
+          return rearWords.some((word) => label.includes(word));
+        });
+        const selected = rearCamera || videoInputs[videoInputs.length - 1] || null;
+        diagnostics.selectedCamera = selected ? (selected.label || 'Uten kameranavn') : 'Automatisk';
+        diagnostics.selectedDeviceId = selected ? selected.deviceId : '';
+        renderDiagnostics();
+        return selected ? selected.deviceId : null;
       }
 
       async function startScan() {
         try {
           if (!window.ZXingBrowser) {
-            throw new Error('ZXing-biblioteket ble ikke lastet. Sjekk nettverk eller bruk manuell kode.');
+            throw new Error('ZXing-biblioteket ble ikke lastet');
+          }
+          if (!window.isSecureContext) {
+            throw new Error('Kamera krever sikker tilkobling/HTTPS');
+          }
+          if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            throw new Error('Kamera krever sikker tilkobling/HTTPS');
           }
           stopScan();
+          hasScanned = false;
+          setLastError('Ingen');
+          const videoInputs = await getVideoInputs();
+          if (!videoInputs.length) {
+            throw new Error('Fant ingen kameraenheter');
+          }
+          const deviceId = chooseCamera(videoInputs);
           codeReader = codeReader || new ZXingBrowser.BrowserMultiFormatReader();
-          setStatus('Ser etter QR-kode eller strekkode...');
+          setStatus('Kamera startet – hold strekkoden rolig i bildet');
           scannerControls = await codeReader.decodeFromVideoDevice(
-            null,
+            deviceId,
             video,
             (result, err, controls) => {
               scannerControls = controls;
-              if (result) {
+              if (result && !hasScanned) {
+                if (controls) {
+                  controls.stop();
+                  scannerControls = null;
+                }
                 openCode(result.getText());
+              } else if (err) {
+                console.debug('ZXing decode:', err);
               }
             }
           );
         } catch (err) {
-          setStatus(err.message || 'Kunne ikke starte kamera.');
+          const message = err.message || 'Kunne ikke starte kamera.';
+          setLastError(message);
+          setStatus(message);
           stopScan();
         }
       }
 
       startBtn.addEventListener('click', startScan);
       stopBtn.addEventListener('click', stopScan);
+      renderDiagnostics();
     </script>
     """
 

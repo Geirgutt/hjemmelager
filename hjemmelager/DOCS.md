@@ -85,6 +85,18 @@ Flyt:
 
 QR-koder som inneholder en Hjemmelager-vare-URL, for eksempel `/item/12`, åpner varen direkte.
 
+### Feilsøking for strekkode-scanning
+
+Scan-siden viser diagnostikk for sikker tilkobling, kameratilgang, ZXing-biblioteket, antall kameraenheter og valgt kamera. Bruk disse punktene hvis kameraet ikke starter:
+
+1. **Home Assistant Ingress:** Åpne add-onen via **Open Web UI** først. Ingress kan fungere fint for vanlig web-UI, men nettleseren kan fortsatt nekte kamera hvis siden ikke regnes som sikker.
+2. **Nabu Casa / HTTPS:** Mobilkamera i nettleser krever normalt sikker kontekst. Home Assistant Cloud / Nabu Casa, lokal HTTPS eller en reverse proxy med gyldig sertifikat er anbefalt.
+3. **Direkte port 8099:** Hvis Ingress gir problemer, aktiver port `8099` i add-onens **Network**-innstillinger og test `https://homeassistant.local:8099` hvis du har HTTPS foran Home Assistant. Ren `http://homeassistant.local:8099` kan brukes til web-UI, men kamera blir ofte blokkert av mobilnettleseren.
+4. **Nettlesertillatelser:** Slett eller endre kameratillatelsen for Home Assistant-siden i nettleseren, last siden på nytt og trykk **Start kamera** igjen.
+5. **Android/iPhone:** Sjekk at både nettleseren/Home Assistant-appen og selve nettstedet har kameratillatelse. På iPhone må kamera ofte tillates både for Safari/Home Assistant-appen og for den konkrete siden.
+
+Hvis kamera fortsatt ikke starter, bruk feltet **Manuell kode** på samme side. Backend-oppslag og flyten videre er den samme som ved vellykket scanning.
+
 ## Pris, holdbarhet og åpne pakker
 
 Varer kan ha pris og holdbarhetsdato. Datoen er et enkelt datofelt og brukes foreløpig som informasjon på varen.
@@ -193,7 +205,7 @@ Hver godkjente versjon skal ha både versjonsnummer og kodenavn.
 Gjeldende versjon er:
 
 ```text
-0.1.5 - Første hylle
+0.2.1 - Første hylle
 ```
 
 Kontroller installert versjon på én av disse måtene:
