@@ -4,3 +4,9 @@ Package: @zxing/browser 0.2.0
 License: MIT
 
 Used for client-side barcode and QR-code scanning.
+
+Open Food Facts
+Source: https://world.openfoodfacts.org/
+License: Open Database License (ODbL)
+
+Used for optional product-name, brand and product-image suggestions after scanning a barcode.

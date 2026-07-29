@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0 - Første hylle
+
+- Delte lageret i **Forbruk**, **Ting** og **Alle**, og gjorde kort, liste, filtre og mobilnavigasjon mer kompakte.
+- Forenklet **Ny vare** med et kort grunnskjema og valgfrie seksjoner for lager, plassering, koder og notater.
+- La inn automatisk produktoppslag fra Open Food Facts etter strekkodeskann, med navn, merke, lokalt lagret bilde og manuell reserve.
+- La inn enkel **Koble NFC-tag**-flyt med ventemodus, automatisk kobling og trygg konflikthåndtering.
+- Gjorde handlelisten til en varig sjekkliste med avhuking, deling og eget mål for hvor mye som skal kjøpes.
+- La inn tydelig valg for å slå av handlelisten på en vare og sikker, bekreftet sletting av varer.
+- Forbedret varesiden med tydeligere lagerhandlinger, kompakt bilde og merking av varer som er utløpt eller snart utløper.
+- Skjulte teknisk kameradiagnostikk under **Feilsøking** og forbedret tekstene på Scan-siden.
+- La inn automatiske tester for NFC, produktoppslag, handleliste, holdbarhet og sletting.
+
 ## 0.3.0 - Første hylle
 
 - Gjorde mobilgrensesnittet enklere med fast bunnmeny, tydeligere varekort, søk og sammenleggbare filtre.

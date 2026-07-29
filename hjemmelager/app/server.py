@@ -5,15 +5,20 @@ import json
 import os
 import sqlite3
 import time
+from contextlib import contextmanager
+from datetime import date
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlencode, parse_qs, unquote, urlparse
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.4.0"
 APP_CODENAME = "Første hylle"
+TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
 APP_DIR = Path(__file__).resolve().parent
@@ -21,17 +26,32 @@ STATIC_DIR = APP_DIR / "static"
 PORT = int(os.environ.get("HJEMMELAGER_PORT", "8099"))
 MAX_IMAGE_UPLOAD_BYTES = 1_500_000
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+OPEN_FOOD_FACTS_BASE_URL = "https://world.openfoodfacts.org"
+OPEN_FOOD_FACTS_USER_AGENT = (
+    f"{APP_NAME}/{APP_VERSION} (https://github.com/Geirgutt/tr-kker)"
+)
+PRODUCT_LOOKUP_CACHE = {}
+PRODUCT_LOOKUP_CACHE_SECONDS = 24 * 60 * 60
 
 
 def now():
     return int(time.time())
 
 
+@contextmanager
 def db():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    return conn
+    conn.execute("pragma foreign_keys = on")
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def init_db():
@@ -46,6 +66,7 @@ def init_db():
                 opened_quantity real not null default 0,
                 unit text not null default 'stk',
                 min_quantity real not null default 0,
+                target_quantity real not null default 0,
                 price real not null default 0,
                 best_before text not null default '',
                 location text not null default '',
@@ -55,6 +76,7 @@ def init_db():
                 image_url text not null default '',
                 note text not null default '',
                 shopping_enabled integer not null default 1,
+                shopping_checked integer not null default 0,
                 last_scanned_at integer,
                 created_at integer not null,
                 updated_at integer not null
@@ -82,6 +104,18 @@ def init_db():
                 created_at integer not null,
                 foreign key (item_id) references items(id) on delete cascade
             );
+
+            create table if not exists tag_link_sessions (
+                id integer primary key check (id = 1),
+                item_id integer not null,
+                status text not null default 'waiting',
+                tag_id text not null default '',
+                message text not null default '',
+                started_at integer not null,
+                expires_at integer not null,
+                updated_at integer not null,
+                foreign key (item_id) references items(id) on delete cascade
+            );
             """
         )
         columns = {row["name"] for row in conn.execute("pragma table_info(items)").fetchall()}
@@ -91,8 +125,12 @@ def init_db():
             conn.execute("alter table items add column opened_quantity real not null default 0")
         if "price" not in columns:
             conn.execute("alter table items add column price real not null default 0")
+        if "target_quantity" not in columns:
+            conn.execute("alter table items add column target_quantity real not null default 0")
         if "best_before" not in columns:
             conn.execute("alter table items add column best_before text not null default ''")
+        if "shopping_checked" not in columns:
+            conn.execute("alter table items add column shopping_checked integer not null default 0")
         for table, column in (("locations", "location"), ("categories", "category")):
             values = conn.execute(
                 f"select distinct trim({column}) as name from items where trim({column}) != ''"
@@ -112,6 +150,18 @@ def row_to_item(row):
         and item["min_quantity"] > 0
         and item["quantity"] <= item["min_quantity"]
     )
+    item["days_until_best_before"] = None
+    item["is_expired"] = False
+    item["expires_soon"] = False
+    if item["kind"] == "consumable" and item["best_before"]:
+        try:
+            days_left = (date.fromisoformat(item["best_before"]) - date.today()).days
+        except ValueError:
+            pass
+        else:
+            item["days_until_best_before"] = days_left
+            item["is_expired"] = days_left < 0
+            item["expires_soon"] = 0 <= days_left <= 14
     return item
 
 
@@ -134,6 +184,17 @@ def list_items(where="", params=()):
     with db() as conn:
         rows = conn.execute(query, params).fetchall()
     return [row_to_item(row) for row in rows]
+
+
+def count_items(kind=""):
+    query = "select count(*) as total from items"
+    params = ()
+    if kind:
+        query += " where kind = ?"
+        params = (kind,)
+    with db() as conn:
+        row = conn.execute(query, params).fetchone()
+    return int(row["total"])
 
 
 def distinct_values(column):
@@ -168,9 +229,12 @@ def create_registry_entry(kind, name):
         save_registry_value(conn, table, name)
 
 
-def build_item_filters(search="", category="", location="", low_only=False):
+def build_item_filters(search="", category="", location="", low_only=False, kind=""):
     clauses = []
     params = []
+    if kind in ("consumable", "thing"):
+        clauses.append("kind = ?")
+        params.append(kind)
     if search:
         clauses.append("(name like ? or location like ? or category like ? or tag_id like ? or barcode like ? or note like ?)")
         params.extend([f"%{search}%"] * 6)
@@ -314,9 +378,9 @@ def create_item(data):
         cur = conn.execute(
             """
             insert into items (
-                name, kind, quantity, opened_quantity, unit, min_quantity, price, best_before,
+                name, kind, quantity, opened_quantity, unit, min_quantity, target_quantity, price, best_before,
                 location, category, tag_id, barcode, image_url, note, shopping_enabled, created_at, updated_at
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 (data.get("name") or "Uten navn").strip(),
@@ -325,6 +389,7 @@ def create_item(data):
                 opened_quantity,
                 (data.get("unit") or "stk").strip(),
                 parse_float(data.get("min_quantity")),
+                parse_float(data.get("target_quantity")),
                 parse_float(data.get("price")),
                 (data.get("best_before") or "").strip(),
                 location,
@@ -358,10 +423,10 @@ def update_item(item_id, data):
         conn.execute(
             """
             update items set
-                name = ?, kind = ?, quantity = ?, opened_quantity = ?, unit = ?, min_quantity = ?,
+                name = ?, kind = ?, quantity = ?, opened_quantity = ?, unit = ?, min_quantity = ?, target_quantity = ?,
                 price = ?, best_before = ?,
                 location = ?, category = ?, tag_id = ?, barcode = ?, image_url = ?, note = ?,
-                shopping_enabled = ?, updated_at = ?
+                shopping_enabled = ?, shopping_checked = 0, updated_at = ?
             where id = ?
             """,
             (
@@ -371,6 +436,7 @@ def update_item(item_id, data):
                 parse_float(data.get("opened_quantity"), existing["opened_quantity"]),
                 (data.get("unit") or existing["unit"]).strip(),
                 parse_float(data.get("min_quantity"), existing["min_quantity"]),
+                parse_float(data.get("target_quantity"), existing["target_quantity"]),
                 parse_float(data.get("price"), existing["price"]),
                 (data.get("best_before") or "").strip(),
                 location,
@@ -395,11 +461,70 @@ def adjust_item(item_id, delta, note=""):
             return None
         quantity = max(0, float(row["quantity"]) + float(delta))
         conn.execute(
-            "update items set quantity = ?, updated_at = ? where id = ?",
-            (quantity, now(), item_id),
+            """
+            update items
+            set quantity = ?,
+                shopping_checked = case when ? > 0 then 0 else shopping_checked end,
+                updated_at = ?
+            where id = ?
+            """,
+            (quantity, float(delta), now(), item_id),
         )
         save_event(conn, item_id, "adjusted", delta, quantity, note)
     return get_item(item_id)
+
+
+def set_shopping_checked(item_id, checked):
+    with db() as conn:
+        row = conn.execute("select * from items where id = ?", (item_id,)).fetchone()
+        if not row:
+            return None
+        value = 1 if checked else 0
+        conn.execute(
+            "update items set shopping_checked = ?, updated_at = ? where id = ?",
+            (value, now(), item_id),
+        )
+        save_event(
+            conn,
+            item_id,
+            "shopping_checked" if value else "shopping_unchecked",
+            None,
+            row["quantity"],
+            "web",
+        )
+    return get_item(item_id)
+
+
+def set_shopping_enabled(item_id, enabled):
+    with db() as conn:
+        row = conn.execute("select * from items where id = ?", (item_id,)).fetchone()
+        if not row:
+            return None
+        conn.execute(
+            """
+            update items
+            set shopping_enabled = ?, shopping_checked = 0, updated_at = ?
+            where id = ?
+            """,
+            (1 if enabled else 0, now(), item_id),
+        )
+        save_event(
+            conn,
+            item_id,
+            "shopping_enabled" if enabled else "shopping_disabled",
+            None,
+            row["quantity"],
+        )
+    return get_item(item_id)
+
+
+def delete_item(item_id):
+    with db() as conn:
+        row = conn.execute("select id from items where id = ?", (item_id,)).fetchone()
+        if not row:
+            return False
+        conn.execute("delete from items where id = ?", (item_id,))
+    return True
 
 
 def adjust_opened_item(item_id, delta, note=""):
@@ -431,17 +556,276 @@ def open_package(item_id, note=""):
     return get_item(item_id)
 
 
-def touch_tag(tag_id):
-    item = get_item_by_tag(tag_id)
+def start_tag_link(item_id):
+    item = get_item(item_id)
     if not item:
         return None
+    timestamp = now()
+    with db() as conn:
+        conn.execute("delete from tag_link_sessions")
+        conn.execute(
+            """
+            insert into tag_link_sessions
+                (id, item_id, status, tag_id, message, started_at, expires_at, updated_at)
+            values (1, ?, 'waiting', '', '', ?, ?, ?)
+            """,
+            (item_id, timestamp, timestamp + TAG_LINK_TTL_SECONDS, timestamp),
+        )
+    return get_tag_link_session(item_id)
+
+
+def get_tag_link_session(item_id=None):
+    with db() as conn:
+        row = conn.execute("select * from tag_link_sessions where id = 1").fetchone()
+        if not row or (item_id is not None and row["item_id"] != item_id):
+            return None
+        session = dict(row)
+        if session["status"] == "waiting" and session["expires_at"] <= now():
+            message = "Tiden løp ut uten at en tag ble skannet."
+            conn.execute(
+                "update tag_link_sessions set status = 'expired', message = ?, updated_at = ? where id = 1",
+                (message, now()),
+            )
+            session["status"] = "expired"
+            session["message"] = message
+        session["seconds_left"] = max(0, session["expires_at"] - now())
+        return session
+
+
+def cancel_tag_link(item_id):
     with db() as conn:
         conn.execute(
-            "update items set last_scanned_at = ?, updated_at = ? where id = ?",
-            (now(), now(), item["id"]),
+            """
+            update tag_link_sessions
+            set status = 'cancelled', message = 'Koblingen ble avbrutt.', updated_at = ?
+            where id = 1 and item_id = ? and status = 'waiting'
+            """,
+            (now(), item_id),
         )
-        save_event(conn, item["id"], "tag_scanned", None, item["quantity"], tag_id)
-    return get_item(item["id"])
+    return get_tag_link_session(item_id)
+
+
+def touch_tag(tag_id):
+    tag_id = (tag_id or "").strip()
+    if not tag_id:
+        return {"status": "not_found", "tag_id": ""}
+
+    timestamp = now()
+    result = None
+    with db() as conn:
+        session_row = conn.execute(
+            """
+            select * from tag_link_sessions
+            where id = 1 and status = 'waiting' and expires_at > ?
+            """,
+            (timestamp,),
+        ).fetchone()
+        linked_row = conn.execute("select * from items where tag_id = ?", (tag_id,)).fetchone()
+
+        if session_row:
+            target_row = conn.execute(
+                "select * from items where id = ?", (session_row["item_id"],)
+            ).fetchone()
+            if not target_row:
+                message = "Varen finnes ikke lenger."
+                conn.execute(
+                    """
+                    update tag_link_sessions
+                    set status = 'cancelled', message = ?, updated_at = ?
+                    where id = 1
+                    """,
+                    (message, timestamp),
+                )
+                return {"status": "cancelled", "tag_id": tag_id, "message": message}
+
+            if linked_row and linked_row["id"] != target_row["id"]:
+                message = f'Taggen er allerede koblet til «{linked_row["name"]}».'
+                conn.execute(
+                    """
+                    update tag_link_sessions
+                    set status = 'conflict', tag_id = ?, message = ?, updated_at = ?
+                    where id = 1
+                    """,
+                    (tag_id, message, timestamp),
+                )
+                result = {
+                    "status": "conflict",
+                    "tag_id": tag_id,
+                    "message": message,
+                    "existing_item_id": linked_row["id"],
+                    "existing_item_name": linked_row["name"],
+                }
+            else:
+                conn.execute(
+                    """
+                    update items
+                    set tag_id = ?, last_scanned_at = ?, updated_at = ?
+                    where id = ?
+                    """,
+                    (tag_id, timestamp, timestamp, target_row["id"]),
+                )
+                message = f'Taggen er koblet til «{target_row["name"]}».'
+                conn.execute(
+                    """
+                    update tag_link_sessions
+                    set status = 'linked', tag_id = ?, message = ?, updated_at = ?
+                    where id = 1
+                    """,
+                    (tag_id, message, timestamp),
+                )
+                save_event(
+                    conn,
+                    target_row["id"],
+                    "tag_linked",
+                    None,
+                    target_row["quantity"],
+                    tag_id,
+                )
+                result = {
+                    "status": "linked",
+                    "tag_id": tag_id,
+                    "message": message,
+                    "item_id": target_row["id"],
+                }
+        elif linked_row:
+            conn.execute(
+                "update items set last_scanned_at = ?, updated_at = ? where id = ?",
+                (timestamp, timestamp, linked_row["id"]),
+            )
+            save_event(
+                conn,
+                linked_row["id"],
+                "tag_scanned",
+                None,
+                linked_row["quantity"],
+                tag_id,
+            )
+            result = {"status": "touched", "tag_id": tag_id, "item_id": linked_row["id"]}
+        else:
+            result = {"status": "not_found", "tag_id": tag_id}
+
+    if result.get("item_id"):
+        result["item"] = get_item(result["item_id"])
+    return result
+
+
+def download_product_image(image_url):
+    parsed = urlparse(image_url or "")
+    if parsed.scheme != "https" or parsed.hostname != "images.openfoodfacts.org":
+        return ""
+    request = Request(
+        image_url,
+        headers={
+            "User-Agent": OPEN_FOOD_FACTS_USER_AGENT,
+            "Accept": "image/jpeg,image/png,image/webp",
+        },
+    )
+    try:
+        with urlopen(request, timeout=6) as response:
+            content_type = response.headers.get_content_type()
+            if content_type not in ALLOWED_IMAGE_TYPES:
+                return ""
+            raw = response.read(MAX_IMAGE_UPLOAD_BYTES + 1)
+            if len(raw) > MAX_IMAGE_UPLOAD_BYTES:
+                return ""
+    except (HTTPError, URLError, TimeoutError, OSError):
+        return ""
+    return f"data:{content_type};base64,{base64.b64encode(raw).decode('ascii')}"
+
+
+def lookup_product(barcode):
+    barcode = (barcode or "").strip()
+    if not barcode.isdigit() or not 8 <= len(barcode) <= 14:
+        return {
+            "status": "not_applicable",
+            "barcode": barcode,
+            "message": "Koden ser ikke ut som en vanlig produktstrekkode.",
+        }
+
+    cached = PRODUCT_LOOKUP_CACHE.get(barcode)
+    if cached and cached["cached_at"] + PRODUCT_LOOKUP_CACHE_SECONDS > now():
+        return cached["result"]
+
+    fields = ",".join(
+        (
+            "code",
+            "product_name",
+            "product_name_no",
+            "product_name_en",
+            "brands",
+            "quantity",
+            "image_front_small_url",
+        )
+    )
+    url = (
+        f"{OPEN_FOOD_FACTS_BASE_URL}/api/v3.6/product/{barcode}.json?"
+        + urlencode({"fields": fields})
+    )
+    request = Request(
+        url,
+        headers={
+            "User-Agent": OPEN_FOOD_FACTS_USER_AGENT,
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urlopen(request, timeout=6) as response:
+            payload = json.load(response)
+    except HTTPError as exc:
+        result = {
+            "status": "not_found" if exc.code == 404 else "unavailable",
+            "barcode": barcode,
+            "message": (
+                "Fant ikke produktet i Open Food Facts. Fyll inn varen manuelt."
+                if exc.code == 404
+                else "Produktoppslaget er midlertidig utilgjengelig."
+            ),
+        }
+    except (URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
+        result = {
+            "status": "unavailable",
+            "barcode": barcode,
+            "message": "Kunne ikke kontakte Open Food Facts. Du kan fylle inn varen manuelt.",
+        }
+    else:
+        product = payload.get("product") or {}
+        if payload.get("status") != "success" or not product:
+            result = {
+                "status": "not_found",
+                "barcode": barcode,
+                "message": "Fant ikke produktet i Open Food Facts. Fyll inn varen manuelt.",
+            }
+        else:
+            product_name = (
+                product.get("product_name_no")
+                or product.get("product_name")
+                or product.get("product_name_en")
+                or ""
+            ).strip()
+            if not product_name:
+                result = {
+                    "status": "not_found",
+                    "barcode": barcode,
+                    "message": "Produktet mangler navn. Fyll inn varen manuelt.",
+                }
+            else:
+                image_data = download_product_image(product.get("image_front_small_url") or "")
+                result = {
+                    "status": "found",
+                    "barcode": product.get("code") or barcode,
+                    "name": product_name,
+                    "brand": (product.get("brands") or "").split(",")[0].strip(),
+                    "package_size": (product.get("quantity") or "").strip(),
+                    "image_data": image_data,
+                    "suggested_category": "Matvarer",
+                    "suggested_unit": "pk",
+                    "source": "Open Food Facts",
+                    "source_url": f"https://world.openfoodfacts.org/product/{barcode}",
+                    "message": "Produktinformasjon ble funnet.",
+                }
+
+    PRODUCT_LOOKUP_CACHE[barcode] = {"cached_at": now(), "result": result}
+    return result
 
 
 def item_id_from_scanned_url(code):
@@ -644,6 +1028,47 @@ def page(title, body, base_path=""):
       background: color-mix(in srgb, var(--accent) 12%, var(--panel));
       border-color: var(--accent);
     }}
+    .inventory-tabs {{
+      display: grid;
+      grid-template-columns: repeat(3, auto);
+      gap: 6px;
+      width: fit-content;
+      max-width: 100%;
+      padding: 5px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: color-mix(in srgb, var(--line) 22%, var(--panel));
+    }}
+    .inventory-tab {{
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      min-height: 42px;
+      padding: 8px;
+      border-radius: 9px;
+      color: var(--muted);
+      font-weight: 750;
+      text-decoration: none;
+    }}
+    .inventory-tab.active {{
+      color: var(--text);
+      background: var(--panel);
+      box-shadow: var(--shadow-sm);
+    }}
+    .inventory-tab-count {{
+      min-width: 23px;
+      padding: 2px 6px;
+      border-radius: 999px;
+      color: var(--muted);
+      background: color-mix(in srgb, var(--line) 45%, transparent);
+      font-size: .75rem;
+      text-align: center;
+    }}
+    .inventory-tab.active .inventory-tab-count {{
+      color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 12%, transparent);
+    }}
     .card {{
       background: var(--panel);
       border: 1px solid var(--line);
@@ -711,12 +1136,13 @@ def page(title, body, base_path=""):
       z-index: 1;
     }}
     .item-card .qty {{
-      font-size: 1.72rem;
-      margin-bottom: 0;
+      margin: 5px 0 0;
+      font-size: 1.08rem;
+      font-weight: 720;
     }}
     .opened-count {{
-      margin-top: 1px;
-      font-size: .92rem;
+      margin-top: 0;
+      font-size: .84rem;
     }}
     .item-list {{
       display: grid;
@@ -789,7 +1215,15 @@ def page(title, body, base_path=""):
       font-size: .85rem;
       white-space: nowrap;
     }}
+    .item-badges {{
+      display: flex;
+      gap: 4px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }}
     .low {{ border-color: #f59e0b; color: #92400e; background: #fef3c7; }}
+    .expires-soon {{ border-color: #f59e0b; color: #92400e; background: #fff7df; }}
+    .expired {{ border-color: #ef4444; color: #991b1b; background: #fee2e2; }}
     .scanner {{
       width: 100%;
       aspect-ratio: 4 / 3;
@@ -809,6 +1243,19 @@ def page(title, body, base_path=""):
       background: color-mix(in srgb, var(--line) 18%, transparent);
       font-size: .9rem;
     }}
+    .scanner-diagnostics-wrap {{
+      border-top: 1px solid var(--line);
+      padding-top: 8px;
+    }}
+    .scanner-diagnostics-wrap summary {{
+      cursor: pointer;
+      color: var(--muted);
+      font-size: .86rem;
+      font-weight: 700;
+    }}
+    .scanner-diagnostics-wrap[open] summary {{
+      margin-bottom: 8px;
+    }}
     .scanner-diagnostics dt {{
       color: var(--muted);
       font-weight: 650;
@@ -817,6 +1264,122 @@ def page(title, body, base_path=""):
       margin: 0;
       min-width: 0;
       overflow-wrap: anywhere;
+    }}
+    .shopping-header {{
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }}
+    .shopping-header h1 {{
+      margin-bottom: 3px;
+    }}
+    .shopping-header p {{
+      margin: 0;
+    }}
+    .shopping-section-title {{
+      margin: 16px 0 8px;
+      color: var(--muted);
+      font-size: .86rem;
+      font-weight: 800;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }}
+    .shopping-list {{
+      display: grid;
+      gap: 5px;
+    }}
+    .shopping-row {{
+      display: grid;
+      grid-template-columns: 30px 36px minmax(0, 1fr);
+      gap: 8px;
+      align-items: center;
+      padding: 7px 8px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel);
+      box-shadow: var(--shadow-sm);
+    }}
+    .shopping-row.checked {{
+      opacity: .62;
+    }}
+    .shopping-check {{
+      display: grid;
+      place-items: center;
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      border: 2px solid color-mix(in srgb, var(--muted) 65%, var(--line));
+      border-radius: 9px;
+      color: white;
+      background: transparent;
+      cursor: pointer;
+    }}
+    .shopping-row.checked .shopping-check {{
+      border-color: var(--ok);
+      background: var(--ok);
+    }}
+    .shopping-check svg {{
+      width: 17px;
+      height: 17px;
+      fill: none;
+      stroke: currentColor;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-width: 2.5;
+    }}
+    .shopping-thumb {{
+      width: 36px;
+      aspect-ratio: 1;
+      padding: 3px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      object-fit: contain;
+      background: #fff;
+    }}
+    .shopping-copy {{
+      min-width: 0;
+    }}
+    .shopping-name {{
+      margin: 0;
+      overflow: hidden;
+      font-size: .94rem;
+      font-weight: 780;
+      line-height: 1.12;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }}
+    .shopping-row.checked .shopping-name {{
+      text-decoration: line-through;
+    }}
+    .shopping-amount {{
+      margin-top: 1px;
+      color: var(--accent);
+      font-size: .84rem;
+      font-weight: 750;
+      line-height: 1.16;
+    }}
+    .shopping-meta {{
+      margin-top: 1px;
+      overflow: hidden;
+      color: var(--muted);
+      font-size: .72rem;
+      line-height: 1.15;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }}
+    .shopping-completed {{
+      margin-top: 14px;
+      border: 0;
+    }}
+    .shopping-completed summary {{
+      cursor: pointer;
+      color: var(--muted);
+      font-weight: 750;
+    }}
+    .shopping-completed .shopping-list {{
+      margin-top: 8px;
     }}
     .qty {{ font-size: 2rem; font-weight: 800; margin: 8px 0; }}
     .actions {{ display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }}
@@ -837,6 +1400,218 @@ def page(title, body, base_path=""):
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 12px;
     }}
+    .form-card {{
+      display: grid;
+      gap: 12px;
+    }}
+    .form-card h2 {{
+      margin: 0;
+      font-size: 1.05rem;
+    }}
+    .form-card > p {{
+      margin: -5px 0 0;
+    }}
+    .form-section {{
+      padding: 0;
+      overflow: clip;
+    }}
+    .form-section > summary {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px;
+      cursor: pointer;
+      font-weight: 750;
+      list-style: none;
+    }}
+    .form-section > summary::-webkit-details-marker {{
+      display: none;
+    }}
+    .form-section > summary::after {{
+      content: "+";
+      color: var(--accent);
+      font-size: 1.35rem;
+      font-weight: 500;
+    }}
+    .form-section[open] > summary::after {{
+      content: "−";
+    }}
+    .form-section-summary {{
+      display: grid;
+      gap: 2px;
+    }}
+    .form-section-summary small {{
+      color: var(--muted);
+      font-weight: 500;
+    }}
+    .form-section-content {{
+      padding: 0 14px 14px;
+      border-top: 1px solid var(--line);
+    }}
+    .form-section-content .form-grid {{
+      padding-top: 14px;
+    }}
+    .field-help {{
+      color: var(--muted);
+      font-size: .84rem;
+      font-weight: 500;
+    }}
+    .field-group {{
+      display: grid;
+      gap: 6px;
+    }}
+    .field-label {{
+      font-weight: 650;
+    }}
+    .file-picker {{
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 46px;
+      padding: 10px 12px;
+      border: 1px dashed color-mix(in srgb, var(--accent) 55%, var(--line));
+      border-radius: 10px;
+      color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 7%, var(--panel));
+      cursor: pointer;
+    }}
+    .file-picker svg {{
+      width: 20px;
+      height: 20px;
+      fill: none;
+      stroke: currentColor;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-width: 2;
+    }}
+    .barcode-step {{
+      display: grid;
+      gap: 7px;
+      padding: 12px;
+      border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+      border-radius: 11px;
+      background: color-mix(in srgb, var(--accent) 6%, var(--panel));
+    }}
+    .barcode-scan-link {{
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 46px;
+    }}
+    .barcode-scan-link svg {{
+      width: 21px;
+      height: 21px;
+      fill: none;
+      stroke: currentColor;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-width: 2;
+    }}
+    .barcode-confirmation {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }}
+    .product-suggestion {{
+      display: grid;
+      grid-template-columns: 58px minmax(0, 1fr);
+      gap: 10px;
+      align-items: center;
+      padding-top: 9px;
+      border-top: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line));
+    }}
+    .product-suggestion[hidden] {{
+      display: none;
+    }}
+    .product-suggestion-image {{
+      width: 58px;
+      aspect-ratio: 1;
+      padding: 3px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      object-fit: contain;
+      background: #fff;
+    }}
+    .product-suggestion-copy {{
+      min-width: 0;
+    }}
+    .product-suggestion-copy p {{
+      margin: 1px 0 0;
+    }}
+    .product-source {{
+      color: var(--muted);
+      font-size: .75rem;
+    }}
+    .product-source a {{
+      color: inherit;
+    }}
+    .tag-link-card {{
+      display: grid;
+      justify-items: center;
+      gap: 12px;
+      max-width: 520px;
+      margin: 0 auto;
+      padding: 24px;
+      text-align: center;
+    }}
+    .tag-link-icon {{
+      display: grid;
+      place-items: center;
+      width: 78px;
+      height: 78px;
+      border-radius: 50%;
+      color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 11%, var(--panel));
+    }}
+    .tag-link-icon.waiting {{
+      animation: tag-pulse 1.6s ease-in-out infinite;
+    }}
+    .tag-link-icon svg {{
+      width: 42px;
+      height: 42px;
+      fill: none;
+      stroke: currentColor;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-width: 1.8;
+    }}
+    .tag-link-card h1, .tag-link-card p {{
+      margin: 0;
+    }}
+    .tag-link-status {{
+      min-height: 2.7em;
+    }}
+    .tag-link-card .actions {{
+      justify-content: center;
+      margin-top: 2px;
+    }}
+    .danger-zone {{
+      margin-top: 10px;
+      padding: 0;
+      overflow: clip;
+    }}
+    .danger-zone > summary {{
+      padding: 12px 14px;
+      color: var(--muted);
+      cursor: pointer;
+      font-weight: 700;
+    }}
+    .danger-zone-content {{
+      padding: 0 14px 14px;
+      border-top: 1px solid var(--line);
+    }}
+    .danger-zone-content p {{
+      margin: 10px 0;
+    }}
+    @keyframes tag-pulse {{
+      0%, 100% {{ box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 26%, transparent); }}
+      50% {{ box-shadow: 0 0 0 12px transparent; }}
+    }}
     .full {{ grid-column: 1 / -1; }}
     table {{ width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 8px; overflow: hidden; }}
     th, td {{ padding: 10px; border-bottom: 1px solid var(--line); text-align: left; }}
@@ -856,27 +1631,51 @@ def page(title, body, base_path=""):
     }}
     @media (max-width: 680px) {{
       body {{
+        font-size: 15px;
+        line-height: 1.32;
         padding-bottom: calc(78px + env(safe-area-inset-bottom));
       }}
       header .bar {{
-        min-height: 54px;
-        padding: 10px 14px;
+        min-height: 50px;
+        padding: 8px 12px;
       }}
       header nav {{
         display: none;
       }}
       main {{
-        padding-top: 12px;
+        padding: 8px 12px 12px;
       }}
       footer {{
         display: none !important;
       }}
       h1 {{
-        margin-top: 2px;
-        margin-bottom: 12px;
+        margin-top: 0;
+        margin-bottom: 8px;
+        line-height: 1.15;
+      }}
+      h2 {{
+        line-height: 1.16;
+      }}
+      .inventory-title {{
+        display: none;
+      }}
+      .inventory-tabs {{
+        gap: 3px;
+        padding: 3px;
+      }}
+      .inventory-tab {{
+        min-height: 36px;
+        padding: 5px 4px;
+        font-size: .86rem;
+      }}
+      .inventory-tab-count {{
+        min-width: 20px;
+        padding: 1px 5px;
+        font-size: .69rem;
       }}
       .search-row {{
         grid-template-columns: minmax(0, 1fr) auto;
+        grid-column: 1 / -1;
       }}
       .search-row .btn {{
         min-height: 44px;
@@ -887,34 +1686,187 @@ def page(title, body, base_path=""):
       .filter-panel summary {{
         display: inline-flex;
         align-items: center;
+        justify-content: center;
+        width: 42px;
         min-height: 42px;
-        padding: 8px 11px;
+        padding: 8px;
         border: 1px solid var(--line);
         border-radius: 10px;
         background: var(--panel);
       }}
+      .filter-panel summary svg {{
+        width: 21px;
+        height: 21px;
+        fill: none;
+        stroke: currentColor;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        stroke-width: 2;
+      }}
       .filter-panel .filters {{
         margin-top: 10px;
       }}
+      .toolbar {{
+        grid-template-columns: auto minmax(0, 1fr);
+        column-gap: 8px;
+        row-gap: 7px;
+        margin-bottom: 8px;
+      }}
+      .filter-panel {{
+        grid-column: 1;
+      }}
+      .filter-panel[open] {{
+        grid-column: 1 / -1;
+      }}
+      .view-switch {{
+        grid-column: 2;
+        justify-content: flex-end;
+        gap: 6px;
+        flex-wrap: nowrap;
+        margin-top: 0;
+      }}
+      .view-switch .btn {{
+        min-height: 42px;
+        padding: 8px 10px;
+        font-size: .86rem;
+        white-space: nowrap;
+      }}
       .filters {{ grid-template-columns: 1fr; }}
-      .form-grid {{ grid-template-columns: 1fr; }}
-      .qty {{ font-size: 1.7rem; }}
+      .card {{
+        padding: 10px;
+      }}
+      form.stack, .stack {{
+        gap: 8px;
+      }}
+      .form-grid {{
+        grid-template-columns: 1fr;
+        gap: 8px;
+      }}
+      .form-card {{
+        gap: 8px;
+      }}
+      .form-card > p {{
+        margin-top: -3px;
+      }}
+      .form-section > summary {{
+        gap: 8px;
+        padding: 10px;
+      }}
+      .form-section-content {{
+        padding: 0 10px 10px;
+      }}
+      .form-section-content .form-grid {{
+        padding-top: 10px;
+      }}
+      label, .field-group {{
+        gap: 4px;
+      }}
+      input, select, textarea {{
+        padding: 9px;
+      }}
+      textarea {{
+        min-height: 74px;
+      }}
+      .field-help {{
+        font-size: .79rem;
+        line-height: 1.25;
+      }}
+      .file-picker {{
+        min-height: 42px;
+        padding: 8px 10px;
+      }}
+      .barcode-step {{
+        gap: 5px;
+        padding: 9px;
+      }}
+      .barcode-scan-link {{
+        min-height: 42px;
+      }}
+      .tag-link-card {{
+        gap: 9px;
+        padding: 18px 12px;
+      }}
+      .tag-link-icon {{
+        width: 68px;
+        height: 68px;
+      }}
+      .danger-zone > summary {{
+        padding: 10px;
+      }}
+      .danger-zone-content {{
+        padding: 0 10px 10px;
+      }}
+      .qty {{ font-size: 1.45rem; line-height: 1.1; }}
       .grid {{
-        gap: 10px;
-      }}
-      .item-card {{
-        grid-template-columns: 64px minmax(0, 1fr);
-        padding: 13px;
-      }}
-      .item-thumb {{ width: 64px; }}
-      .item-card .actions {{
         gap: 6px;
       }}
+      .item-card {{
+        grid-template-columns: 46px minmax(0, 1fr);
+        gap: 8px;
+        padding: 8px;
+      }}
+      .item-thumb {{
+        width: 46px;
+        border-radius: 9px;
+        padding: 3px;
+      }}
+      .item-meta {{
+        gap: 0;
+        font-size: .82rem;
+        line-height: 1.2;
+      }}
+      .item-card .item-title {{
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 2px;
+      }}
+      .item-card .pill {{
+        min-height: 22px;
+        padding: 1px 7px;
+        font-size: .74rem;
+        line-height: 1.1;
+      }}
+      .item-card .qty {{
+        margin-top: 1px;
+        font-size: .96rem;
+        line-height: 1.15;
+      }}
+      .opened-count {{
+        font-size: .76rem;
+        line-height: 1.15;
+      }}
+      .item-card .actions {{
+        gap: 5px;
+        margin-top: 6px;
+      }}
       .item-card .actions .btn {{
-        min-height: 40px;
+        min-height: 36px;
+        padding: 7px 9px;
+        font-size: .86rem;
       }}
       .item-card .actions .details-link {{
         margin-left: auto;
+      }}
+      .item-detail-card .item-hero {{
+        max-height: 230px;
+        margin-bottom: 9px;
+        padding: 8px;
+      }}
+      .item-detail-card .item-title {{
+        align-items: center;
+        margin-bottom: 3px;
+      }}
+      .item-detail-card p {{
+        margin: 5px 0;
+      }}
+      .item-detail-card .actions {{
+        gap: 6px;
+        margin-top: 8px;
+      }}
+      .item-detail-card .actions .btn {{
+        min-height: 38px;
+        padding: 7px 10px;
+        font-size: .86rem;
       }}
       .item-row {{
         grid-template-columns: 44px minmax(0, 1fr) auto;
@@ -1024,8 +1976,19 @@ def page(title, body, base_path=""):
 </html>"""
 
 
+def item_badges(item, low_label="Kjøp inn"):
+    badges = []
+    if item["is_low"]:
+        badges.append(f'<span class="pill low">{esc(low_label)}</span>')
+    if item["is_expired"]:
+        badges.append('<span class="pill expired">Utløpt</span>')
+    elif item["expires_soon"]:
+        badges.append('<span class="pill expires-soon">Utløper snart</span>')
+    return f'<span class="item-badges">{"".join(badges)}</span>' if badges else ""
+
+
 def item_card(item):
-    low = '<span class="pill low">Kjøp inn</span>' if item["is_low"] else ""
+    badges = item_badges(item)
     category = item["category"] or ("Forbruksvare" if item["kind"] == "consumable" else "Gjenstand")
     location = item["location"] or "Ingen plassering"
     price = f"{fmt_price(item['price'])} kr" if fmt_price(item["price"]) else ""
@@ -1048,7 +2011,7 @@ def item_card(item):
       <div class="item-main">
         <div class="item-title">
           <h2><a class="item-name-link" href="item/{item['id']}">{esc(item['name'])}</a></h2>
-          {low}
+          {badges}
         </div>
         <div class="item-meta muted">
           <div class="item-meta-line">{esc(category)} · {esc(location)}</div>
@@ -1068,7 +2031,7 @@ def item_card(item):
 
 
 def item_row(item):
-    low = '<span class="pill low">Kjøp inn</span>' if item["is_low"] else ""
+    badges = item_badges(item)
     thumb = f'<a href="item/{item["id"]}"><img class="item-row-thumb" src="{esc(item["image_url"])}" alt=""></a>' if item["image_url"] else '<div class="item-row-thumb" aria-hidden="true"></div>'
     category = item["category"] or ("Forbruksvare" if item["kind"] == "consumable" else "Gjenstand")
     location = item["location"] or "Uten plassering"
@@ -1088,7 +2051,7 @@ def item_row(item):
       {thumb}
       <div class="item-row-title">
         <a href="item/{item['id']}">{esc(item['name'])}</a>
-        {low}
+        {badges}
       </div>
       <div class="item-row-meta muted">{esc(location)}</div>
       <div class="item-row-location muted">{esc(category)}</div>
@@ -1118,14 +2081,16 @@ def query_link(params, **updates):
 
 
 def item_form(item=None, tag_id="", barcode=""):
+    is_new = item is None
     item = item or {
         "id": None,
         "name": "",
         "kind": "consumable",
-        "quantity": 0,
+        "quantity": 1,
         "opened_quantity": 0,
         "unit": "stk",
         "min_quantity": 0,
+        "target_quantity": 0,
         "price": 0,
         "best_before": "",
         "location": "",
@@ -1141,6 +2106,35 @@ def item_form(item=None, tag_id="", barcode=""):
     image_url = "" if str(item["image_url"]).startswith("data:") else item["image_url"]
     categories = distinct_values("category")
     locations = distinct_values("location")
+    barcode_step = ""
+    if is_new:
+        if item["barcode"]:
+            barcode_step = f"""
+              <div class="full barcode-step" id="barcode-step">
+                <div class="barcode-confirmation">
+                  <span><strong>Strekkode lest</strong><br><span class="muted">{esc(item["barcode"])}</span></span>
+                  <a class="btn" href="scan">Skann på nytt</a>
+                </div>
+                <div class="product-suggestion" id="product-suggestion">
+                  <div class="product-suggestion-image" id="product-suggestion-placeholder" aria-hidden="true"></div>
+                  <div class="product-suggestion-copy">
+                    <strong id="product-suggestion-title">Slår opp produkt …</strong>
+                    <p class="muted" id="product-suggestion-detail">Du kan fylle inn feltene mens vi søker.</p>
+                    <p class="product-source" id="product-suggestion-source"></p>
+                  </div>
+                </div>
+              </div>
+            """
+        else:
+            barcode_step = """
+              <div class="full barcode-step" id="barcode-step">
+                <a class="btn primary barcode-scan-link" href="scan">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4"/><path d="M8 9v6M11 9v6M14 9v6M17 9v6"/></svg>
+                  Skann strekkode
+                </a>
+                <span class="field-help">Raskeste vei for matvarer og andre produkter med strekkode.</span>
+              </div>
+            """
     remove_image = f"""
         <label class="full">
           <span><input type="checkbox" name="remove_image" value="1"> Fjern bilde</span>
@@ -1148,91 +2142,353 @@ def item_form(item=None, tag_id="", barcode=""):
     """ if item["image_url"] else ""
     return f"""
     <form class="stack" method="post" action="{action}" enctype="multipart/form-data">
-      <div class="form-grid">
-        <label class="full">Navn
-          <input name="name" value="{esc(item['name'])}" required>
-        </label>
-        <label>Type
-          <select name="kind">
-            <option value="consumable" {"selected" if item['kind'] == 'consumable' else ""}>Forbruksvare</option>
-            <option value="thing" {"selected" if item['kind'] == 'thing' else ""}>Gjenstand</option>
-          </select>
-        </label>
-        <label>Kategori
-          <select name="category">{option_list(categories, item["category"], "Ingen kategori")}</select>
-        </label>
-        <label>Antall
-          <input name="quantity" type="number" step="0.01" value="{fmt_num(item['quantity'])}">
-        </label>
-        <label>Åpne pakker
-          <input name="opened_quantity" type="number" step="0.01" value="{fmt_num(item['opened_quantity'])}">
-        </label>
-        <label>Enhet
-          <input name="unit" value="{esc(item['unit'])}" placeholder="stk, pk, meter">
-        </label>
-        <label>Minimum
-          <input name="min_quantity" type="number" step="0.01" value="{fmt_num(item['min_quantity'])}">
-        </label>
-        <label>Pris
-          <input name="price" type="number" step="0.01" value="{esc(fmt_price(item['price']))}" placeholder="0.00">
-        </label>
-        <label>Holdbarhetsdato
-          <input name="best_before" type="date" value="{esc(item['best_before'])}">
-        </label>
-        <label>Ny kategori
-          <input name="new_category" placeholder="Matvarer, kabler, verktøy">
-        </label>
-        <label>Plassering
-          <select name="location">{option_list(locations, item["location"], "Ingen plassering")}</select>
-        </label>
-        <label>Ny plassering
-          <input name="new_location" placeholder="Kjøkken > Kjøleskap">
-        </label>
-        <label class="full">NFC tag-id
-          <input name="tag_id" value="{esc(item['tag_id'] or '')}" placeholder="tag_id fra Home Assistant">
-        </label>
-        <label class="full">Strekkode eller QR-kode
-          <input name="barcode" value="{esc(item['barcode'] or '')}" placeholder="EAN, UPC, QR-tekst eller annen kode">
-        </label>
-        <label class="full">Bilde-URL
-          <input name="image_url" value="{esc(image_url)}" placeholder="valgfritt">
-        </label>
-        <label class="full">Last opp bilde
-          <input name="image_file" type="file" accept="image/jpeg,image/png,image/webp,image/gif">
-        </label>
-        {remove_image}
-        <label class="full">Notat
-          <textarea name="note">{esc(item['note'])}</textarea>
-        </label>
-        <label class="full">
-          <span><input type="checkbox" name="shopping_enabled" value="1" {checked}> Vis som lav beholdning når antall er under minimum</span>
-        </label>
-      </div>
+      <section class="card form-card">
+        <h2>Det viktigste</h2>
+        <p class="muted">Du kan lagre varen etter bare navn og antall.</p>
+        <div class="form-grid">
+          {barcode_step}
+          <label class="full">Hva heter varen?
+            <input id="item-name" name="name" value="{esc(item['name'])}" placeholder="For eksempel Havregryn" required autofocus>
+          </label>
+          <label>Antall
+            <input name="quantity" type="number" step="0.01" value="{fmt_num(item['quantity'])}" inputmode="decimal">
+          </label>
+          <label>Type
+            <select name="kind" id="item-kind">
+              <option value="consumable" {"selected" if item['kind'] == 'consumable' else ""}>Forbruksvare</option>
+              <option value="thing" {"selected" if item['kind'] == 'thing' else ""}>Gjenstand</option>
+            </select>
+          </label>
+          <label class="full">Plassering
+            <select name="location">{option_list(locations, item["location"], "Velg senere")}</select>
+          </label>
+          <div class="full field-group">
+            <span class="field-label">Bilde</span>
+            <label class="file-picker" for="item-image-file">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h3l1.5-2h7L17 7h3v12H4z"/><circle cx="12" cy="13" r="3"/></svg>
+              Ta eller velg bilde
+            </label>
+            <input class="sr-only" id="item-image-file" name="image_file" type="file" accept="image/jpeg,image/png,image/webp,image/gif" capture="environment">
+            <span class="field-help">Ta et bilde eller velg et du allerede har.</span>
+          </div>
+          {remove_image}
+        </div>
+      </section>
+
+      <details class="card form-section">
+        <summary>
+          <span class="form-section-summary">
+            Lager og handleliste
+            <small>Enhet, minimum, pris og holdbarhet</small>
+          </span>
+        </summary>
+        <div class="form-section-content">
+          <div class="form-grid">
+            <label>Enhet
+              <input id="item-unit" name="unit" value="{esc(item['unit'])}" placeholder="stk, pk, meter">
+            </label>
+            <label>Åpne pakker
+              <input name="opened_quantity" type="number" step="0.01" value="{fmt_num(item['opened_quantity'])}">
+            </label>
+            <label>Varsle ved antall
+              <input name="min_quantity" type="number" step="0.01" value="{fmt_num(item['min_quantity'])}">
+            </label>
+            <label>Fyll opp til
+              <input name="target_quantity" type="number" step="0.01"
+                     value="{fmt_num(item['target_quantity']) if float(item['target_quantity'] or 0) > 0 else ''}"
+                     placeholder="Bruker varslingsgrensen">
+              <span class="field-help">Handlelisten foreslår å kjøpe opp til dette antallet.</span>
+            </label>
+            <label>Pris
+              <input name="price" type="number" step="0.01" value="{esc(fmt_price(item['price']))}" placeholder="Valgfritt">
+            </label>
+            <label class="full">Holdbarhetsdato
+              <input name="best_before" type="date" value="{esc(item['best_before'])}">
+            </label>
+            <label class="full">
+              <input type="hidden" name="shopping_enabled" value="0">
+              <span><input type="checkbox" name="shopping_enabled" value="1" {checked}> Legg på handlelisten når beholdningen blir lav</span>
+            </label>
+          </div>
+        </div>
+      </details>
+
+      <details class="card form-section">
+        <summary>
+          <span class="form-section-summary">
+            Plassering og kategori
+            <small>Organiser varen mer detaljert</small>
+          </span>
+        </summary>
+        <div class="form-section-content">
+          <div class="form-grid">
+            <label class="full">Legg til ny plassering
+              <input name="new_location" placeholder="For eksempel Kjøkken › Skap">
+            </label>
+            <label>Kategori
+              <select id="item-category" name="category">{option_list(categories, item["category"], "Ingen kategori")}</select>
+            </label>
+            <label>Legg til ny kategori
+              <input id="item-new-category" name="new_category" placeholder="Matvarer, verktøy …">
+            </label>
+          </div>
+        </div>
+      </details>
+
+      <details class="card form-section">
+        <summary>
+          <span class="form-section-summary">
+            Koder og NFC
+            <small>Helt valgfritt</small>
+          </span>
+        </summary>
+        <div class="form-section-content">
+          <div class="form-grid">
+            <label class="full">Strekkode eller QR-kode
+              <input name="barcode" value="{esc(item['barcode'] or '')}" placeholder="Kan legges til via Scan">
+            </label>
+            <label class="full">Home Assistant Tag-ID
+              <input name="tag_id" value="{esc(item['tag_id'] or '')}" placeholder="Valgfritt">
+              <span class="field-help">Bruk helst «Koble NFC-tag» på varesiden. Feltet er kun for manuell reservebruk.</span>
+            </label>
+            <label class="full">Bilde-URL
+              <input id="item-image-url" name="image_url" value="{esc(image_url)}" placeholder="Kun hvis bildet ligger på nett">
+            </label>
+          </div>
+        </div>
+      </details>
+
+      <details class="card form-section">
+        <summary>
+          <span class="form-section-summary">
+            Notat
+            <small>Tilleggsinformasjon om varen</small>
+          </span>
+        </summary>
+        <div class="form-section-content">
+          <div class="form-grid">
+            <label class="full">Notat
+              <textarea name="note">{esc(item['note'])}</textarea>
+            </label>
+          </div>
+        </div>
+      </details>
+
       <div class="actions">
-        <button class="btn primary">Lagre</button>
+        <button class="btn primary">Lagre vare</button>
         <a class="btn" href=".">Avbryt</a>
       </div>
     </form>
+    <script>
+      const kindSelect = document.getElementById("item-kind");
+      const barcodeStep = document.getElementById("barcode-step");
+      function updateBarcodeStep() {{
+        if (barcodeStep && kindSelect) {{
+          barcodeStep.hidden = kindSelect.value !== "consumable";
+        }}
+      }}
+      kindSelect?.addEventListener("change", updateBarcodeStep);
+      updateBarcodeStep();
+
+      const lookupBarcode = {json.dumps(item["barcode"] if is_new else "")};
+      const suggestion = document.getElementById("product-suggestion");
+      async function lookupProduct() {{
+        if (!lookupBarcode || !suggestion) return;
+        const title = document.getElementById("product-suggestion-title");
+        const detail = document.getElementById("product-suggestion-detail");
+        const source = document.getElementById("product-suggestion-source");
+        try {{
+          const response = await fetch(
+            "api/product-lookup?barcode=" + encodeURIComponent(lookupBarcode),
+            {{ headers: {{ "Accept": "application/json" }}, cache: "no-store" }}
+          );
+          const product = await response.json();
+          if (product.status !== "found") {{
+            title.textContent = "Fyll inn produktet manuelt";
+            detail.textContent = product.message || "Fant ikke produktet.";
+            return;
+          }}
+
+          const nameInput = document.getElementById("item-name");
+          const unitInput = document.getElementById("item-unit");
+          const categorySelect = document.getElementById("item-category");
+          const newCategoryInput = document.getElementById("item-new-category");
+          const imageUrlInput = document.getElementById("item-image-url");
+          if (!nameInput.value.trim()) nameInput.value = product.name || "";
+          if (unitInput && unitInput.value.trim() === "stk") {{
+            unitInput.value = product.suggested_unit || "pk";
+          }}
+          if (categorySelect && product.suggested_category) {{
+            const matchingOption = [...categorySelect.options]
+              .find((option) => option.value === product.suggested_category);
+            if (matchingOption) {{
+              categorySelect.value = matchingOption.value;
+            }} else if (newCategoryInput && !newCategoryInput.value.trim()) {{
+              newCategoryInput.value = product.suggested_category;
+            }}
+          }}
+          if (imageUrlInput && product.image_data && !imageUrlInput.value) {{
+            imageUrlInput.value = product.image_data;
+            const oldPreview = document.getElementById("product-suggestion-placeholder");
+            const preview = document.createElement("img");
+            preview.id = "product-suggestion-placeholder";
+            preview.className = "product-suggestion-image";
+            preview.src = product.image_data;
+            preview.alt = "";
+            oldPreview?.replaceWith(preview);
+          }}
+
+          title.textContent = product.name;
+          detail.textContent = [product.brand, product.package_size].filter(Boolean).join(" · ")
+            || "Produktinformasjon funnet";
+          source.innerHTML =
+            'Produktdata fra <a href="' + product.source_url +
+            '" target="_blank" rel="noopener">Open Food Facts</a>';
+        }} catch (error) {{
+          title.textContent = "Fyll inn produktet manuelt";
+          detail.textContent = "Produktoppslaget er ikke tilgjengelig akkurat nå.";
+        }}
+      }}
+      lookupProduct();
+    </script>
+    """
+
+
+def tag_link_page(item, session):
+    status = session["status"] if session else "cancelled"
+    messages = {
+        "waiting": f'Åpne Home Assistant-appen og skann klistremerket du vil bruke på «{item["name"]}».',
+        "linked": session["message"] if session else "Taggen er koblet.",
+        "conflict": session["message"] if session else "Taggen er allerede i bruk.",
+        "expired": session["message"] if session else "Tiden løp ut.",
+        "cancelled": session["message"] if session else "Koblingen er ikke aktiv.",
+    }
+    waiting = status == "waiting"
+    icon_class = "tag-link-icon waiting" if waiting else "tag-link-icon"
+    status_text = messages.get(status, "Koblingen er ikke aktiv.")
+    countdown = (
+        f'<span id="tag-link-countdown">{session["seconds_left"]}</span> sekunder igjen'
+        if waiting
+        else ""
+    )
+    retry = (
+        f"""
+          <form method="post" action="item/{item['id']}/tag-link/start">
+            <button class="btn primary">Prøv igjen</button>
+          </form>
+        """
+        if status in ("conflict", "expired", "cancelled")
+        else ""
+    )
+    cancel = (
+        f"""
+          <form method="post" action="item/{item['id']}/tag-link/cancel">
+            <button class="btn">Avbryt</button>
+          </form>
+        """
+        if waiting
+        else ""
+    )
+    done = (
+        f'<a class="btn primary" href="item/{item["id"]}">Tilbake til varen</a>'
+        if status == "linked"
+        else ""
+    )
+    return f"""
+      <section class="card tag-link-card" data-status="{esc(status)}">
+        <div class="{icon_class}" id="tag-link-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24">
+            <path d="M7.5 8.5a5 5 0 0 1 0 7M10.5 6a8.5 8.5 0 0 1 0 12"/>
+            <path d="M14 9.5v5M17 7v10M20 5v14"/>
+          </svg>
+        </div>
+        <h1 id="tag-link-title">{"Venter på NFC-tag" if waiting else "Koble NFC-tag"}</h1>
+        <p class="tag-link-status" id="tag-link-message">{esc(status_text)}</p>
+        <p class="muted" id="tag-link-countdown-wrap">{countdown}</p>
+        <div class="actions" id="tag-link-actions">
+          {cancel}
+          {retry}
+          {done}
+        </div>
+      </section>
+      <script>
+        const itemId = {item["id"]};
+        const initialStatus = {status!r};
+        const statusTitle = document.getElementById("tag-link-title");
+        const statusMessage = document.getElementById("tag-link-message");
+        const countdownWrap = document.getElementById("tag-link-countdown-wrap");
+        const actions = document.getElementById("tag-link-actions");
+        const icon = document.getElementById("tag-link-icon");
+
+        function showResult(data) {{
+          if (data.status === "waiting") {{
+            const seconds = Math.max(0, Number(data.seconds_left || 0));
+            countdownWrap.textContent = seconds + " sekunder igjen";
+            return;
+          }}
+          icon.classList.remove("waiting");
+          countdownWrap.textContent = "";
+          statusMessage.textContent = data.message || "";
+          if (data.status === "linked") {{
+            statusTitle.textContent = "Taggen er koblet ✓";
+            actions.innerHTML = '<a class="btn primary" href="item/' + itemId + '">Tilbake til varen</a>';
+          }} else if (data.status === "conflict") {{
+            statusTitle.textContent = "Taggen er allerede i bruk";
+            actions.innerHTML =
+              '<form method="post" action="item/' + itemId + '/tag-link/start">' +
+              '<button class="btn primary">Prøv igjen</button></form>' +
+              '<a class="btn" href="item/' + itemId + '">Avslutt</a>';
+          }} else {{
+            statusTitle.textContent = "Koblingen ble ikke fullført";
+            actions.innerHTML =
+              '<form method="post" action="item/' + itemId + '/tag-link/start">' +
+              '<button class="btn primary">Prøv igjen</button></form>' +
+              '<a class="btn" href="item/' + itemId + '">Avslutt</a>';
+          }}
+          clearInterval(pollTimer);
+        }}
+
+        async function pollStatus() {{
+          try {{
+            const response = await fetch("api/tag-link/status?item_id=" + itemId, {{
+              headers: {{ "Accept": "application/json" }},
+              cache: "no-store"
+            }});
+            if (response.ok) showResult(await response.json());
+          }} catch (error) {{
+            statusMessage.textContent = "Mistet forbindelsen. Prøver igjen …";
+          }}
+        }}
+
+        let pollTimer = null;
+        if (initialStatus === "waiting") {{
+          pollTimer = setInterval(pollStatus, 1000);
+          pollStatus();
+        }}
+      </script>
     """
 
 
 def scan_page():
     return """
     <section class="stack">
-      <h1>Scan kode</h1>
+      <h1>Skann kode</h1>
       <div class="card stack">
         <video id="scanner-video" class="scanner" playsinline muted></video>
         <div class="actions">
-          <button id="start-scan" class="btn primary" type="button">Start kamera</button>
+          <button id="start-scan" class="btn primary" type="button">Skann med kamera</button>
           <button id="stop-scan" class="btn" type="button">Stopp</button>
         </div>
-        <p id="scan-status" class="muted">Kamera krever HTTPS, for eksempel via Home Assistant Cloud.</p>
-        <dl id="scanner-diagnostics" class="scanner-diagnostics" aria-live="polite"></dl>
+        <p id="scan-status" class="muted">Trykk «Skann med kamera» og hold strekkoden rolig i bildet.</p>
+        <details class="scanner-diagnostics-wrap">
+          <summary>Feilsøking</summary>
+          <dl id="scanner-diagnostics" class="scanner-diagnostics" aria-live="polite"></dl>
+        </details>
         <form class="stack" method="get" action="scan/result">
           <label>Manuell kode
             <input name="code" autocomplete="off" inputmode="text" placeholder="Lim inn eller skriv strekkode/QR-kode">
           </label>
-          <button class="btn">Sok kode</button>
+          <button class="btn">Søk kode</button>
         </form>
       </div>
     </section>
@@ -1400,7 +2656,124 @@ def scan_page():
       startBtn.addEventListener('click', startScan);
       stopBtn.addEventListener('click', stopScan);
       renderDiagnostics();
+      if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+        setStatus('Kamera krever en sikker HTTPS-tilkobling. Du kan fortsatt skrive inn koden manuelt.');
+      }
     </script>
+    """
+
+
+def shopping_list_page():
+    items = list_items(
+        "kind = 'consumable' and shopping_enabled = 1 and min_quantity > 0 and quantity <= min_quantity"
+    )
+    remaining = [item for item in items if not item["shopping_checked"]]
+    completed = [item for item in items if item["shopping_checked"]]
+
+    def shopping_row(item):
+        checked = bool(item["shopping_checked"])
+        target = float(item["target_quantity"] or 0)
+        if target <= 0:
+            target = float(item["min_quantity"])
+        amount = max(1, target - float(item["quantity"]))
+        amount_text = f"{fmt_num(amount)} {esc(item['unit'])}"
+        meta = " · ".join(
+            filter(
+                None,
+                [
+                    f"Har {fmt_num(item['quantity'])}",
+                    f"Minimum {fmt_num(item['min_quantity'])}",
+                    f"Mål {fmt_num(target)}" if target > float(item["min_quantity"]) else "",
+                    item["location"],
+                ],
+            )
+        )
+        thumb = (
+            f'<img class="shopping-thumb" src="{esc(item["image_url"])}" alt="">'
+            if item["image_url"]
+            else '<div class="shopping-thumb" aria-hidden="true"></div>'
+        )
+        checkmark = '<path d="m7 12 3 3 7-7"/>' if checked else ""
+        next_value = "0" if checked else "1"
+        action_label = "Fjern avkrysning" if checked else "Legg i kurven"
+        return f"""
+          <form class="shopping-row {"checked" if checked else ""}" method="post"
+                action="item/{item['id']}/shopping-check"
+                data-copy="{esc(amount_text)} {esc(item['name'])}">
+            <input type="hidden" name="checked" value="{next_value}">
+            <button class="shopping-check" aria-label="{action_label}: {esc(item['name'])}">
+              <svg viewBox="0 0 24 24" aria-hidden="true">{checkmark}</svg>
+            </button>
+            {thumb}
+            <div class="shopping-copy">
+              <p class="shopping-name">{esc(item['name'])}</p>
+              <div class="shopping-amount">Kjøp {amount_text}</div>
+              <div class="shopping-meta">{esc(meta)}</div>
+            </div>
+          </form>
+        """
+
+    remaining_html = "".join(shopping_row(item) for item in remaining)
+    completed_html = "".join(shopping_row(item) for item in completed)
+    if not items:
+        list_content = """
+          <div class="card">
+            <strong>Handlelisten er tom</strong>
+            <p class="muted">Varer dukker opp her når beholdningen når minimumsgrensen.</p>
+          </div>
+        """
+    else:
+        open_content = (
+            f'<section class="shopping-list">{remaining_html}</section>'
+            if remaining_html
+            else '<div class="card"><strong>Alt er lagt i kurven ✓</strong></div>'
+        )
+        completed_content = (
+            f"""
+              <details class="shopping-completed">
+                <summary>I kurven ({len(completed)})</summary>
+                <section class="shopping-list">{completed_html}</section>
+              </details>
+            """
+            if completed_html
+            else ""
+        )
+        list_content = open_content + completed_content
+
+    share_button = (
+        '<button class="btn" id="share-shopping" type="button">Del liste</button>'
+        if remaining
+        else ""
+    )
+    return f"""
+      <section class="shopping-header">
+        <div>
+          <h1>Handleliste</h1>
+          <p class="muted">{len(remaining)} {"vare" if len(remaining) == 1 else "varer"} igjen</p>
+        </div>
+        {share_button}
+      </section>
+      {list_content}
+      <script>
+        const shareButton = document.getElementById("share-shopping");
+        shareButton?.addEventListener("click", async () => {{
+          const lines = [...document.querySelectorAll(".shopping-row:not(.checked)")]
+            .map((row) => "• " + row.dataset.copy);
+          const text = "Handleliste\\n" + lines.join("\\n");
+          try {{
+            if (navigator.share) {{
+              await navigator.share({{ title: "Handleliste", text }});
+            }} else {{
+              await navigator.clipboard.writeText(text);
+              shareButton.textContent = "Kopiert";
+            }}
+          }} catch (error) {{
+            if (error.name !== "AbortError") {{
+              shareButton.textContent = "Kunne ikke dele";
+            }}
+          }}
+        }});
+      </script>
     """
 
 
@@ -1509,26 +2882,71 @@ class Handler(BaseHTTPRequestHandler):
             category = (query.get("category") or [""])[0].strip()
             location = (query.get("location") or [""])[0].strip()
             view = (query.get("view") or ["cards"])[0]
+            kind_view = (query.get("kind") or ["consumable"])[0]
+            if kind_view not in ("consumable", "thing", "all"):
+                kind_view = "consumable"
             low_only = (query.get("low") or [""])[0] == "1"
-            where, params = build_item_filters(search, category, location, low_only)
+            if kind_view == "thing":
+                low_only = False
+            where, params = build_item_filters(
+                search,
+                category,
+                location,
+                low_only,
+                "" if kind_view == "all" else kind_view,
+            )
             items = list_items(where, params)
             categories = distinct_values("category")
             locations = distinct_values("location")
-            current_params = {"q": search, "category": category, "location": location, "low": "1" if low_only else "", "view": view}
+            consumable_count = count_items("consumable")
+            thing_count = count_items("thing")
+            current_params = {
+                "q": search,
+                "category": category,
+                "location": location,
+                "low": "1" if low_only else "",
+                "view": view,
+                "kind": kind_view,
+            }
             card_url = query_link(current_params, view="cards")
             list_url = query_link(current_params, view="list")
             low_url = query_link(current_params, low="" if low_only else "1")
-            clear_url = query_link({"view": view})
+            clear_url = query_link({"view": view, "kind": kind_view})
+            consumable_url = query_link({"view": view, "kind": "consumable"})
+            thing_url = query_link({"view": view, "kind": "thing"})
+            all_url = query_link({"view": view, "kind": "all"})
+            empty_label = {
+                "consumable": "Ingen forbruksvarer passer valgene.",
+                "thing": "Ingen ting passer valgene.",
+                "all": "Ingen treff i lageret.",
+            }[kind_view]
             if view == "list":
-                items_html = "".join(item_row(item) for item in items) or '<div class="card">Ingen varer passer filtrene.</div>'
+                items_html = "".join(item_row(item) for item in items) or f'<div class="card">{empty_label}</div>'
                 items_html = f'<section class="item-list">{items_html}</section>'
             else:
-                items_html = "".join(item_card(item) for item in items) or '<div class="card">Ingen varer passer filtrene.</div>'
+                items_html = "".join(item_card(item) for item in items) or f'<div class="card">{empty_label}</div>'
                 items_html = f'<section class="grid">{items_html}</section>'
+            low_filter = (
+                f'<a class="btn {"active" if low_only else ""}" href="{low_url}">Må kjøpes</a>'
+                if kind_view != "thing"
+                else ""
+            )
             body = f"""
-              <h1>Mitt lager</h1>
+              <h1 class="inventory-title">Mitt lager</h1>
+              <nav class="inventory-tabs" aria-label="Type lager">
+                <a class="inventory-tab {"active" if kind_view == "consumable" else ""}" href="{consumable_url}">
+                  <span>Forbruk</span><span class="inventory-tab-count">{consumable_count}</span>
+                </a>
+                <a class="inventory-tab {"active" if kind_view == "thing" else ""}" href="{thing_url}">
+                  <span>Ting</span><span class="inventory-tab-count">{thing_count}</span>
+                </a>
+                <a class="inventory-tab {"active" if kind_view == "all" else ""}" href="{all_url}">
+                  <span>Alle</span><span class="inventory-tab-count">{consumable_count + thing_count}</span>
+                </a>
+              </nav>
               <form method="get" action="." class="toolbar">
                 <input type="hidden" name="view" value="{esc(view)}">
+                <input type="hidden" name="kind" value="{esc(kind_view)}">
                 <div class="search-row">
                   <label>Søk
                     <input name="q" value="{esc(search)}" placeholder="Søk etter vare, sted eller kode">
@@ -1536,7 +2954,10 @@ class Handler(BaseHTTPRequestHandler):
                   <button class="btn primary">Søk</button>
                 </div>
                 <details class="filter-panel" open>
-                  <summary>Filtre</summary>
+                  <summary title="Filtre">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16l-6.5 7.2V18l-3 1.5v-7.3z"/></svg>
+                    <span class="sr-only">Filtre</span>
+                  </summary>
                   <div class="filters">
                     <label>Plassering
                       <select name="location">{option_list(locations, location, "Alle steder")}</select>
@@ -1551,7 +2972,7 @@ class Handler(BaseHTTPRequestHandler):
                 <div class="view-switch">
                   <a class="btn {"active" if view != "list" else ""}" href="{card_url}">Kort</a>
                   <a class="btn {"active" if view == "list" else ""}" href="{list_url}">Liste</a>
-                  <a class="btn {"active" if low_only else ""}" href="{low_url}">Må kjøpes</a>
+                  {low_filter}
                 </div>
               </form>
               {items_html}
@@ -1585,9 +3006,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "low-stock":
-            items = list_items("kind = 'consumable' and shopping_enabled = 1 and min_quantity > 0 and quantity <= min_quantity")
-            cards = "".join(item_card(item) for item in items) or '<div class="card">Ingen lave beholdninger akkurat nå.</div>'
-            self.send_html("Lav beholdning", f"<h1>Lav beholdning</h1><section class=\"grid\">{cards}</section>")
+            self.send_html("Lav beholdning", shopping_list_page())
             return
 
         if path.startswith("item/"):
@@ -1598,7 +3017,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_html("Ikke funnet", "<h1>Ikke funnet</h1>", HTTPStatus.NOT_FOUND)
                     return
                 img = f'<img class="item-hero" src="{esc(item["image_url"])}" alt="{esc(item["name"])}">' if item["image_url"] else ""
-                low = '<span class="pill low">Lav beholdning</span>' if item["is_low"] else ""
+                badges = item_badges(item, "Lav beholdning")
                 price_text = fmt_price(item["price"]) or "Ikke satt"
                 best_before_text = item["best_before"] or "Ikke satt"
                 is_consumable = item["kind"] == "consumable"
@@ -1613,7 +3032,14 @@ class Handler(BaseHTTPRequestHandler):
                     else ""
                 )
                 stock_details = (
-                    f'<p class="muted">Pris: {esc(price_text)} · Holdbarhetsdato: {esc(best_before_text)}</p>'
+                    f"""
+                      <p class="muted">Pris: {esc(price_text)} · Holdbarhetsdato: {esc(best_before_text)}</p>
+                      <p class="muted">Varsle ved: {fmt_num(item["min_quantity"])} · Fyll opp til: {
+                          fmt_num(item["target_quantity"])
+                          if float(item["target_quantity"] or 0) > 0
+                          else fmt_num(item["min_quantity"])
+                      }</p>
+                    """
                     if is_consumable
                     else ""
                 )
@@ -1628,16 +3054,33 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 consumable_actions = (
                     f"""
-                      <form method="post" action="item/{item['id']}/open"><button class="btn">Åpne pakke</button></form>
-                      <form method="post" action="item/{item['id']}/adjust-opened"><input type="hidden" name="delta" value="-1"><button class="btn">Bruk åpen</button></form>
+                      <form method="post" action="item/{item['id']}/open"><button class="btn">Åpne 1 pakke</button></form>
+                      <form method="post" action="item/{item['id']}/adjust-opened"><input type="hidden" name="delta" value="-1"><button class="btn">Bruk 1 åpen</button></form>
+                    """
+                    if is_consumable
+                    else ""
+                )
+                tag_action_label = "Bytt NFC-tag" if item["tag_id"] else "Koble NFC-tag"
+                shopping_toggle = (
+                    f"""
+                      <form method="post" action="item/{item['id']}/shopping-toggle">
+                        <input type="hidden" name="enabled" value="{
+                            "0" if item["shopping_enabled"] else "1"
+                        }">
+                        <button class="btn">{
+                            "Ikke på handleliste"
+                            if item["shopping_enabled"]
+                            else "Bruk handleliste"
+                        }</button>
+                      </form>
                     """
                     if is_consumable
                     else ""
                 )
                 body = f"""
-                  <div class="card">
+                  <div class="card item-detail-card">
                     {img}
-                    <div class="item-title"><h1>{esc(item['name'])}</h1>{low}</div>
+                    <div class="item-title"><h1>{esc(item['name'])}</h1>{badges}</div>
                     <div class="qty">{quantity_text}</div>
                     {opened_text}
                     <p class="muted">{esc(item['category'])} {("· " + esc(item['location'])) if item['location'] else ""}</p>
@@ -1645,14 +3088,42 @@ class Handler(BaseHTTPRequestHandler):
                     {identifiers}
                     {f"<p>{esc(item['note'])}</p>" if item['note'] else ""}
                     <div class="actions">
-                      <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn">−1</button></form>
-                      <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="1"><button class="btn primary">+1</button></form>
+                      <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn">Fjern 1</button></form>
+                      <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="1"><button class="btn primary">Legg til 1</button></form>
                       {consumable_actions}
+                      <form method="post" action="item/{item['id']}/tag-link/start">
+                        <button class="btn">{tag_action_label}</button>
+                      </form>
+                      {shopping_toggle}
                       <a class="btn" href="item/{item['id']}/edit">Rediger</a>
                     </div>
                   </div>
+                  <details class="card danger-zone">
+                    <summary>Flere valg</summary>
+                    <div class="danger-zone-content">
+                      <p class="muted">Sletting fjerner varen, NFC-koblingen og historikken permanent.</p>
+                      <form method="post" action="item/{item['id']}/delete"
+                            onsubmit="return confirm('Vil du slette varen permanent? Dette kan ikke angres.')">
+                        <button class="btn danger">Slett vare</button>
+                      </form>
+                    </div>
+                  </details>
                 """
                 self.send_html(item["name"], body)
+                return
+            if (
+                len(parts) == 3
+                and parts[2] == "tag-link"
+                and parts[1].isdigit()
+            ):
+                item = get_item(int(parts[1]))
+                if not item:
+                    self.send_html("Ikke funnet", "<h1>Ikke funnet</h1>", HTTPStatus.NOT_FOUND)
+                    return
+                self.send_html(
+                    "Koble NFC-tag",
+                    tag_link_page(item, get_tag_link_session(item["id"])),
+                )
                 return
             if len(parts) == 3 and parts[2] == "edit" and parts[1].isdigit():
                 item = get_item(int(parts[1]))
@@ -1676,6 +3147,28 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "api/categories":
             self.send_json({"categories": distinct_values("category")})
+            return
+
+        if path == "api/tag-link/status":
+            query = parse_qs(urlparse(self.path).query)
+            item_id = int((query.get("item_id") or ["0"])[0] or 0)
+            session = get_tag_link_session(item_id)
+            if not session:
+                self.send_json(
+                    {
+                        "status": "cancelled",
+                        "message": "Ingen aktiv tag-kobling.",
+                        "seconds_left": 0,
+                    }
+                )
+                return
+            self.send_json(session)
+            return
+
+        if path == "api/product-lookup":
+            query = parse_qs(urlparse(self.path).query)
+            barcode = (query.get("barcode") or [""])[0]
+            self.send_json(lookup_product(barcode))
             return
 
         if path == "api/version":
@@ -1723,6 +3216,47 @@ class Handler(BaseHTTPRequestHandler):
 
         if path.startswith("item/"):
             parts = path.split("/")
+            if (
+                len(parts) == 3
+                and parts[2] == "shopping-toggle"
+                and parts[1].isdigit()
+            ):
+                item = set_shopping_enabled(
+                    int(parts[1]),
+                    str(data.get("enabled", "0")).lower() in ("1", "true", "on", "yes"),
+                )
+                if not item:
+                    self.send_html("Ikke funnet", "<h1>Ikke funnet</h1>", HTTPStatus.NOT_FOUND)
+                    return
+                self.redirect(f"item/{parts[1]}")
+                return
+            if len(parts) == 3 and parts[2] == "delete" and parts[1].isdigit():
+                if not delete_item(int(parts[1])):
+                    self.send_html("Ikke funnet", "<h1>Ikke funnet</h1>", HTTPStatus.NOT_FOUND)
+                    return
+                self.redirect(".")
+                return
+            if (
+                len(parts) == 4
+                and parts[2] == "tag-link"
+                and parts[3] == "start"
+                and parts[1].isdigit()
+            ):
+                session = start_tag_link(int(parts[1]))
+                if not session:
+                    self.send_html("Ikke funnet", "<h1>Ikke funnet</h1>", HTTPStatus.NOT_FOUND)
+                    return
+                self.redirect(f"item/{parts[1]}/tag-link")
+                return
+            if (
+                len(parts) == 4
+                and parts[2] == "tag-link"
+                and parts[3] == "cancel"
+                and parts[1].isdigit()
+            ):
+                cancel_tag_link(int(parts[1]))
+                self.redirect(f"item/{parts[1]}")
+                return
             if len(parts) == 3 and parts[2] == "adjust" and parts[1].isdigit():
                 adjust_item(int(parts[1]), parse_float(data.get("delta")), "web")
                 self.redirect(f"item/{parts[1]}")
@@ -1734,6 +3268,13 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 3 and parts[2] == "adjust-opened" and parts[1].isdigit():
                 adjust_opened_item(int(parts[1]), parse_float(data.get("delta")), "web")
                 self.redirect(f"item/{parts[1]}")
+                return
+            if len(parts) == 3 and parts[2] == "shopping-check" and parts[1].isdigit():
+                set_shopping_checked(
+                    int(parts[1]),
+                    str(data.get("checked", "0")).lower() in ("1", "true", "on", "yes"),
+                )
+                self.redirect("low-stock")
                 return
             if len(parts) == 3 and parts[2] == "edit" and parts[1].isdigit():
                 try:
@@ -1777,11 +3318,14 @@ class Handler(BaseHTTPRequestHandler):
                 tag_id = parts[2]
                 action = parts[3]
                 if action == "touch":
-                    item = touch_tag(tag_id)
-                    if not item:
+                    result = touch_tag(tag_id)
+                    if result["status"] == "not_found":
                         self.send_json({"error": "tag not found", "tag_id": tag_id, "create_path": f"new?tag_id={tag_id}"}, HTTPStatus.NOT_FOUND)
                         return
-                    self.send_json({"item": item})
+                    if result["status"] == "conflict":
+                        self.send_json(result, HTTPStatus.CONFLICT)
+                        return
+                    self.send_json(result)
                     return
                 if action == "adjust":
                     item = get_item_by_tag(tag_id)

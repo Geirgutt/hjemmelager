@@ -32,11 +32,16 @@ Home Assistant krever at et add-on-repository har `repository.yaml` i roten, og 
 
 Home Assistant sin mobilapp kan lese NFC-tags. Når en tag scannes, fyrer Home Assistant eventen `tag_scanned` med en `tag_id`.
 
-### Manuell bruk
+### Koble en NFC-tag til en vare
+
+Når REST-kommandoen og automasjonen under er lagt inn:
 
 1. Lag eller åpne en vare i Hjemmelager.
-2. Skriv inn NFC-tag-id i feltet **NFC tag-id**.
-3. Når taggen scannes i Home Assistant, kan du bruke automasjonen under for å sende scannen til Hjemmelager.
+2. Trykk **Koble NFC-tag**.
+3. Skann NFC-klistremerket i Home Assistant-appen innen tre minutter.
+4. Hjemmelager kobler taggen automatisk til varen.
+
+Hvis taggen allerede tilhører en annen vare, får du beskjed og ingenting flyttes automatisk. Feltet **Home Assistant Tag-ID** under avanserte varefelter kan fortsatt brukes som manuell reserve.
 
 ### REST-kommando i Home Assistant
 
@@ -67,7 +72,7 @@ action:
       tag_id: "{{ trigger.event.data.tag_id }}"
 ```
 
-Dette registrerer scannen i Hjemmelager. Hvis taggen finnes, oppdateres “sist scannet”. Hvis den ikke finnes, returnerer API-et `404`, og du kan opprette en vare med tag-id-en i web-UI.
+Dette registrerer scannen i Hjemmelager. Under en aktiv **Koble NFC-tag**-økt kobles neste ukjente tag til den valgte varen. Ellers oppdateres “sist scannet” for kjente tagger, mens ukjente tagger returnerer `404`.
 
 ## Strekkode og QR
 
@@ -78,10 +83,13 @@ Kamera i nettleseren krever normalt HTTPS. Bruk for eksempel Home Assistant Clou
 Flyt:
 
 1. Åpne **Scan** fra toppmenyen.
-2. Trykk **Start kamera**.
+2. Trykk **Skann med kamera**.
 3. Scan QR-kode eller strekkode.
 4. Hvis koden finnes på en vare, åpnes varen.
 5. Hvis koden er ukjent, åpnes ny vare med koden ferdig utfylt.
+6. For vanlige produktstrekkoder forsøker Hjemmelager å hente navn, merke og produktbilde fra Open Food Facts. Hvis produktet eller nettet ikke er tilgjengelig, fylles varen inn manuelt som før.
+
+Produktoppslaget er gratis og krever ingen konto, men Raspberry Pi-en må kunne kontakte `world.openfoodfacts.org`. Produktdataene kommer fra [Open Food Facts](https://world.openfoodfacts.org/) under Open Database License. Bildet lastes ned én gang og lagres sammen med varen, slik at visningen ikke er avhengig av nettet senere.
 
 QR-koder som inneholder en Hjemmelager-vare-URL, for eksempel `/item/12`, åpner varen direkte.
 
@@ -230,6 +238,10 @@ hjemmelager/DOCS.md          denne kontrollseksjonen
 
 1. Opprett lokasjoner som tekst, for eksempel `Bod > Hylle 2 > Boks A`.
 2. Legg NFC-tag på boksen, skuffen eller varen.
-3. Opprett varen i Hjemmelager og fyll inn NFC tag-id manuelt, eller legg inn strekkode/QR-kode.
-4. Bruk `+1`, `-1` og `Sett antall` fra mobilvisningen.
-5. Bruk **Lav beholdning** som enkel handleliste-kilde.
+3. Opprett varen i Hjemmelager og bruk **Koble NFC-tag**, eller skann produktets strekkode.
+4. Bruk **Fjern 1**, **Legg til 1**, **Åpne 1 pakke** og **Bruk 1 åpen** fra varesiden.
+5. Bruk **Handleliste** som sjekkliste i butikken.
+
+For forbruksvarer kan **Varsle ved antall** brukes som grensen for når varen dukker opp på handlelisten. **Fyll opp til** bestemmer hvor mange handlelisten foreslår at du kjøper. Hvis feltet ikke er satt, brukes varslingsgrensen.
+
+Hvis en tom vare skal beholdes, men ikke kjøpes igjen, trykker du **Ikke på handleliste** på varesiden. Hvis varen ikke skal beholdes i Hjemmelager i det hele tatt, åpner du **Flere valg** og velger **Slett vare**. Sletting krever bekreftelse og fjerner også NFC-koblingen og varehistorikken.
