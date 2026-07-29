@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from copy import deepcopy
 from datetime import date, timedelta
 from pathlib import Path
 from unittest import mock
@@ -123,6 +124,58 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertEqual(event_count, 0)
         self.assertEqual(session_count, 0)
 
+    def test_backup_contains_inventory_and_history(self):
+        item = self.create_item(
+            "Backupvare",
+            location="Bod",
+            category="Test",
+            image_url="data:image/jpeg;base64,ZmFrZQ==",
+        )
+        self.app.adjust_item(item["id"], 2, "backup-test")
+
+        backup = self.app.create_backup_payload()
+        self.assertEqual(backup["format"], "hjemmelager-backup")
+        self.assertEqual(backup["format_version"], 1)
+        self.assertEqual(backup["data"]["items"][0]["name"], "Backupvare")
+        self.assertTrue(backup["data"]["items"][0]["image_url"].startswith("data:image/"))
+        self.assertEqual(backup["data"]["locations"][0]["name"], "Bod")
+        self.assertEqual(backup["data"]["categories"][0]["name"], "Test")
+        self.assertGreaterEqual(len(backup["data"]["events"]), 2)
+
+    def test_restore_replaces_data_and_keeps_before_copy(self):
+        original = self.create_item("Original", quantity="3", location="Bod")
+        backup = self.app.create_backup_payload()
+        self.app.delete_item(original["id"])
+        self.create_item("Midlertidig")
+
+        result = self.app.restore_backup_payload(backup)
+        restored = self.app.list_items()
+        self.assertEqual([item["name"] for item in restored], ["Original"])
+        self.assertEqual(restored[0]["quantity"], 3)
+        before_path = Path(self.temp_dir.name) / result["before_filename"]
+        self.assertTrue(before_path.is_file())
+        before_payload = json.loads(before_path.read_text(encoding="utf-8"))
+        self.assertEqual(before_payload["data"]["items"][0]["name"], "Midlertidig")
+
+    def test_invalid_restore_rolls_back_without_data_loss(self):
+        current = self.create_item("Behold meg")
+        invalid = self.app.create_backup_payload()
+        duplicate = deepcopy(invalid["data"]["items"][0])
+        duplicate["id"] = current["id"] + 1
+        duplicate["name"] = "Duplikat"
+        duplicate["tag_id"] = "samme-tag"
+        invalid["data"]["items"][0]["tag_id"] = "samme-tag"
+        invalid["data"]["items"].append(duplicate)
+
+        with self.assertRaises(self.app.sqlite3.IntegrityError):
+            self.app.restore_backup_payload(invalid)
+
+        self.assertEqual([item["name"] for item in self.app.list_items()], ["Behold meg"])
+
+    def test_rejects_unknown_backup_format(self):
+        with self.assertRaisesRegex(ValueError, "ukjent"):
+            self.app.parse_backup_bytes(b'{"format": "noe-annet", "format_version": 1}')
+
     def test_expiry_flags(self):
         expired = self.create_item(
             "Gammel",
@@ -140,6 +193,93 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertTrue(expired["is_expired"])
         self.assertTrue(soon["expires_soon"])
         self.assertFalse(later["expires_soon"])
+
+    def test_expiry_filter_includes_expired_and_sorts_nearest_first(self):
+        later = self.create_item(
+            "Senere",
+            best_before=(date.today() + timedelta(days=20)).isoformat(),
+        )
+        soon = self.create_item(
+            "Snart",
+            best_before=(date.today() + timedelta(days=7)).isoformat(),
+        )
+        expired = self.create_item(
+            "Utløpt",
+            best_before=(date.today() - timedelta(days=1)).isoformat(),
+        )
+        self.create_item("Uten dato")
+
+        where, params = self.app.build_item_filters(
+            kind="consumable",
+            expiry_only=True,
+        )
+        filtered = self.app.list_items(where, params, sort="best_before")
+
+        self.assertEqual(
+            [item["id"] for item in filtered],
+            [expired["id"], soon["id"]],
+        )
+        self.assertNotIn(later["id"], [item["id"] for item in filtered])
+
+    def test_empty_states_offer_a_clear_next_step(self):
+        consumable = self.app.inventory_empty_state("consumable")
+        thing = self.app.inventory_empty_state("thing")
+        filtered = self.app.inventory_empty_state(
+            "consumable",
+            filtered=True,
+            clear_url=".?kind=consumable",
+        )
+
+        self.assertIn("Skann strekkode", consumable)
+        self.assertIn("new?kind=thing", thing)
+        self.assertIn("Ingen treff", filtered)
+        self.assertIn("Vis hele lageret", filtered)
+
+    def test_new_thing_form_uses_plain_thing_language(self):
+        form = self.app.item_form(kind="thing")
+
+        self.assertIn("Hva heter gjenstanden?", form)
+        self.assertIn("For eksempel Slagdrill", form)
+        self.assertIn("Lagre gjenstand", form)
+        self.assertIn('<option value="thing" selected>Ting</option>', form)
+
+    def test_alerts_combine_low_stock_and_expiry_without_double_counting(self):
+        self.create_item(
+            "Melk",
+            quantity="1",
+            min_quantity="2",
+            target_quantity="5",
+            best_before=(date.today() + timedelta(days=2)).isoformat(),
+        )
+        self.create_item(
+            "Gammel ost",
+            quantity="3",
+            min_quantity="0",
+            best_before=(date.today() - timedelta(days=1)).isoformat(),
+        )
+
+        alerts = self.app.create_alerts_payload(days=14)
+
+        self.assertEqual(alerts["summary"]["total"], 2)
+        self.assertEqual(alerts["summary"]["low_stock"], 1)
+        self.assertEqual(alerts["summary"]["best_before"], 2)
+        self.assertEqual(alerts["summary"]["expired"], 1)
+        self.assertEqual(alerts["low_stock"][0]["buy_quantity"], 4)
+        self.assertIn("Må kjøpes: Melk (4 stk)", alerts["message"])
+        self.assertIn("Gammel ost (utløpt)", alerts["message"])
+
+    def test_alert_days_are_bounded(self):
+        self.assertEqual(self.app.create_alerts_payload(0)["days_ahead"], 1)
+        self.assertEqual(self.app.create_alerts_payload(999)["days_ahead"], 90)
+        self.assertEqual(self.app.create_alerts_payload("feil")["days_ahead"], 14)
+
+    def test_alert_suggests_one_when_stock_equals_minimum(self):
+        self.create_item("Havregryn", quantity="2", min_quantity="2")
+
+        alerts = self.app.create_alerts_payload()
+
+        self.assertEqual(alerts["low_stock"][0]["buy_quantity"], 1)
+        self.assertIn("Havregryn (1 stk)", alerts["message"])
 
     def test_product_lookup_fills_name_brand_and_local_image(self):
         payload = json.dumps(

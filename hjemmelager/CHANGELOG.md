@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0 - Trygg oversikt
+
+- La inn komplett sikkerhetskopi og kontrollert gjenoppretting med automatisk kopi av dagens data før noe erstattes.
+- La inn kompakt best før-varsel og filtrert oversikt, sortert med nærmeste dato først.
+- Forbedret tomt lager og tomme søkeresultater med tydelige veier til scanning, ny forbruksvare og ny gjenstand.
+- Gjorde språket i ny-gjenstand-flyten enklere og skjulte matvarefunksjoner når de ikke er relevante.
+- La inn samlet varsel-API for lav beholdning og best før, med ferdig Home Assistant-sensor og daglig mobilautomatisering.
+- Utvidet testpakken til å dekke backup, gjenoppretting, varsler, holdbarhetsfilter og førstegangsbruk.
+
 ## 0.4.0 - Første hylle
 
 - Delte lageret i **Forbruk**, **Ting** og **Alle**, og gjorde kort, liste, filtre og mobilnavigasjon mer kompakte.

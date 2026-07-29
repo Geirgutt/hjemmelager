@@ -6,7 +6,7 @@ import os
 import sqlite3
 import time
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -16,8 +16,8 @@ from urllib.request import Request, urlopen
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "0.4.0"
-APP_CODENAME = "Første hylle"
+APP_VERSION = "0.5.0"
+APP_CODENAME = "Trygg oversikt"
 TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
@@ -25,6 +25,7 @@ APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = APP_DIR / "static"
 PORT = int(os.environ.get("HJEMMELAGER_PORT", "8099"))
 MAX_IMAGE_UPLOAD_BYTES = 1_500_000
+MAX_BACKUP_UPLOAD_BYTES = 25_000_000
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 OPEN_FOOD_FACTS_BASE_URL = "https://world.openfoodfacts.org"
 OPEN_FOOD_FACTS_USER_AGENT = (
@@ -32,6 +33,39 @@ OPEN_FOOD_FACTS_USER_AGENT = (
 )
 PRODUCT_LOOKUP_CACHE = {}
 PRODUCT_LOOKUP_CACHE_SECONDS = 24 * 60 * 60
+BACKUP_ITEM_COLUMNS = (
+    "id",
+    "name",
+    "kind",
+    "quantity",
+    "opened_quantity",
+    "unit",
+    "min_quantity",
+    "target_quantity",
+    "price",
+    "best_before",
+    "location",
+    "category",
+    "tag_id",
+    "barcode",
+    "image_url",
+    "note",
+    "shopping_enabled",
+    "shopping_checked",
+    "last_scanned_at",
+    "created_at",
+    "updated_at",
+)
+BACKUP_REGISTRY_COLUMNS = ("id", "name", "created_at")
+BACKUP_EVENT_COLUMNS = (
+    "id",
+    "item_id",
+    "action",
+    "delta",
+    "quantity_after",
+    "note",
+    "created_at",
+)
 
 
 def now():
@@ -165,22 +199,25 @@ def row_to_item(row):
     return item
 
 
-def list_items(where="", params=()):
+def list_items(where="", params=(), sort="default"):
     query = "select * from items"
     if where:
         query += f" where {where}"
-    query += """
-        order by
-            case
-                when kind = 'consumable'
-                    and shopping_enabled = 1
-                    and min_quantity > 0
-                    and quantity <= min_quantity
-                then 1
-                else 0
-            end desc,
-            lower(name)
-    """
+    if sort == "best_before":
+        query += " order by best_before, lower(name)"
+    else:
+        query += """
+            order by
+                case
+                    when kind = 'consumable'
+                        and shopping_enabled = 1
+                        and min_quantity > 0
+                        and quantity <= min_quantity
+                    then 1
+                    else 0
+                end desc,
+                lower(name)
+        """
     with db() as conn:
         rows = conn.execute(query, params).fetchall()
     return [row_to_item(row) for row in rows]
@@ -207,6 +244,160 @@ def distinct_values(column):
     return [row["name"] for row in rows]
 
 
+def create_backup_payload():
+    with db() as conn:
+        items = [dict(row) for row in conn.execute("select * from items order by id")]
+        locations = [dict(row) for row in conn.execute("select * from locations order by id")]
+        categories = [dict(row) for row in conn.execute("select * from categories order by id")]
+        events = [dict(row) for row in conn.execute("select * from events order by id")]
+    return {
+        "format": "hjemmelager-backup",
+        "format_version": 1,
+        "app_version": APP_VERSION,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "data": {
+            "items": items,
+            "locations": locations,
+            "categories": categories,
+            "events": events,
+        },
+    }
+
+
+def parse_backup_bytes(raw):
+    if not raw:
+        raise ValueError("Velg en sikkerhetskopifil")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Filen er ikke en gyldig Hjemmelager-sikkerhetskopi") from exc
+    if (
+        not isinstance(payload, dict)
+        or payload.get("format") != "hjemmelager-backup"
+        or payload.get("format_version") != 1
+    ):
+        raise ValueError("Filen har ukjent sikkerhetskopiformat")
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise ValueError("Sikkerhetskopien mangler data")
+    for table in ("items", "locations", "categories", "events"):
+        if not isinstance(data.get(table), list):
+            raise ValueError(f"Sikkerhetskopien mangler tabellen {table}")
+        if any(not isinstance(row, dict) for row in data[table]):
+            raise ValueError(f"Sikkerhetskopien har ugyldige rader i {table}")
+    for item in data["items"]:
+        if not isinstance(item, dict) or not str(item.get("name") or "").strip():
+            raise ValueError("Sikkerhetskopien inneholder en ugyldig vare")
+    return payload
+
+
+def restore_backup_payload(payload):
+    before_payload = create_backup_payload()
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    before_filename = f"hjemmelager-before-restore-{timestamp}.json"
+    before_path = (DATA_DIR / before_filename).resolve()
+    if DATA_DIR.resolve() not in before_path.parents:
+        raise ValueError("Ugyldig sikkerhetskopibane")
+    before_path.write_text(
+        json.dumps(before_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    data = payload["data"]
+    defaults = {
+        "kind": "consumable",
+        "quantity": 0,
+        "opened_quantity": 0,
+        "unit": "stk",
+        "min_quantity": 0,
+        "target_quantity": 0,
+        "price": 0,
+        "best_before": "",
+        "location": "",
+        "category": "",
+        "tag_id": None,
+        "barcode": "",
+        "image_url": "",
+        "note": "",
+        "shopping_enabled": 1,
+        "shopping_checked": 0,
+        "last_scanned_at": None,
+        "created_at": now(),
+        "updated_at": now(),
+    }
+
+    with db() as conn:
+        conn.execute("delete from tag_link_sessions")
+        conn.execute("delete from events")
+        conn.execute("delete from items")
+        conn.execute("delete from locations")
+        conn.execute("delete from categories")
+
+        for table in ("locations", "categories"):
+            placeholders = ",".join("?" for _ in BACKUP_REGISTRY_COLUMNS)
+            columns = ",".join(BACKUP_REGISTRY_COLUMNS)
+            for row in data[table]:
+                values = (
+                    row.get("id"),
+                    str(row.get("name") or "").strip(),
+                    row.get("created_at") or now(),
+                )
+                if not values[1]:
+                    continue
+                conn.execute(
+                    f"insert into {table} ({columns}) values ({placeholders})",
+                    values,
+                )
+
+        item_placeholders = ",".join("?" for _ in BACKUP_ITEM_COLUMNS)
+        item_columns = ",".join(BACKUP_ITEM_COLUMNS)
+        for row in data["items"]:
+            values = []
+            for column in BACKUP_ITEM_COLUMNS:
+                if column == "id":
+                    values.append(row.get("id"))
+                elif column == "name":
+                    values.append(str(row.get("name") or "").strip())
+                else:
+                    values.append(row.get(column, defaults.get(column)))
+            conn.execute(
+                f"insert into items ({item_columns}) values ({item_placeholders})",
+                values,
+            )
+
+        valid_item_ids = {
+            row["id"] for row in conn.execute("select id from items").fetchall()
+        }
+        event_placeholders = ",".join("?" for _ in BACKUP_EVENT_COLUMNS)
+        event_columns = ",".join(BACKUP_EVENT_COLUMNS)
+        for row in data["events"]:
+            item_id = row.get("item_id")
+            if item_id is not None and item_id not in valid_item_ids:
+                continue
+            values = [
+                row.get("id"),
+                item_id,
+                row.get("action") or "restored",
+                row.get("delta"),
+                row.get("quantity_after"),
+                row.get("note") or "",
+                row.get("created_at") or now(),
+            ]
+            conn.execute(
+                f"insert into events ({event_columns}) values ({event_placeholders})",
+                values,
+            )
+
+    return {
+        "items": len(data["items"]),
+        "locations": len(data["locations"]),
+        "categories": len(data["categories"]),
+        "events": len(data["events"]),
+        "before_filename": before_filename,
+    }
+
+
 def registry_value(data, field):
     selected = (data.get(field) or "").strip()
     new_value = (data.get(f"new_{field}") or "").strip()
@@ -229,7 +420,14 @@ def create_registry_entry(kind, name):
         save_registry_value(conn, table, name)
 
 
-def build_item_filters(search="", category="", location="", low_only=False, kind=""):
+def build_item_filters(
+    search="",
+    category="",
+    location="",
+    low_only=False,
+    kind="",
+    expiry_only=False,
+):
     clauses = []
     params = []
     if kind in ("consumable", "thing"):
@@ -246,7 +444,108 @@ def build_item_filters(search="", category="", location="", low_only=False, kind
         params.append(location)
     if low_only:
         clauses.append("kind = 'consumable' and shopping_enabled = 1 and min_quantity > 0 and quantity <= min_quantity")
+    if expiry_only:
+        clauses.append("kind = 'consumable' and best_before != '' and best_before <= ?")
+        params.append((date.today() + timedelta(days=14)).isoformat())
     return " and ".join(clauses), tuple(params)
+
+
+def create_alerts_payload(days=14):
+    try:
+        days = int(days)
+    except (TypeError, ValueError):
+        days = 14
+    days = max(1, min(days, 90))
+    threshold = (date.today() + timedelta(days=days)).isoformat()
+    low_items = list_items(
+        "kind = 'consumable' and shopping_enabled = 1 "
+        "and min_quantity > 0 and quantity <= min_quantity"
+    )
+    expiry_items = list_items(
+        "kind = 'consumable' and best_before != '' and best_before <= ?",
+        (threshold,),
+        sort="best_before",
+    )
+
+    low_stock = []
+    for item in low_items:
+        target = float(item["target_quantity"] or 0)
+        if target <= 0:
+            target = float(item["min_quantity"] or 0)
+        low_stock.append(
+            {
+                "id": item["id"],
+                "name": item["name"],
+                "quantity": item["quantity"],
+                "unit": item["unit"],
+                "buy_quantity": max(1, target - float(item["quantity"] or 0)),
+                "location": item["location"],
+            }
+        )
+
+    best_before = []
+    expired_count = 0
+    for item in expiry_items:
+        days_left = item["days_until_best_before"]
+        if days_left is None:
+            continue
+        if days_left < 0:
+            status = "expired"
+            expired_count += 1
+        elif days_left == 0:
+            status = "today"
+        else:
+            status = "soon"
+        best_before.append(
+            {
+                "id": item["id"],
+                "name": item["name"],
+                "best_before": item["best_before"],
+                "days_left": days_left,
+                "status": status,
+                "location": item["location"],
+            }
+        )
+
+    message_parts = []
+    if low_stock:
+        names = ", ".join(
+            f"{entry['name']} ({fmt_num(entry['buy_quantity'])} {entry['unit']})"
+            for entry in low_stock
+        )
+        message_parts.append(f"Må kjøpes: {names}.")
+    if best_before:
+        def expiry_text(entry):
+            if entry["days_left"] < 0:
+                timing = "utløpt"
+            elif entry["days_left"] == 0:
+                timing = "i dag"
+            else:
+                timing = f"{entry['days_left']} dager"
+            return f"{entry['name']} ({timing})"
+
+        message_parts.append(
+            "Best før: " + ", ".join(expiry_text(entry) for entry in best_before) + "."
+        )
+
+    unique_item_ids = {
+        entry["id"] for entry in low_stock
+    } | {
+        entry["id"] for entry in best_before
+    }
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "days_ahead": days,
+        "summary": {
+            "total": len(unique_item_ids),
+            "low_stock": len(low_stock),
+            "best_before": len(best_before),
+            "expired": expired_count,
+        },
+        "message": " ".join(message_parts) or "Ingen varer krever oppmerksomhet.",
+        "low_stock": low_stock,
+        "best_before": best_before,
+    }
 
 
 def get_item(item_id):
@@ -341,6 +640,12 @@ def parse_multipart_form(raw, content_type):
         content = content.rstrip(b"\r\n")
         if filename:
             if not content:
+                continue
+            if name == "backup_file":
+                if len(content) > MAX_BACKUP_UPLOAD_BYTES:
+                    raise ValueError("Sikkerhetskopien er for stor. Maks 25 MB")
+                data["backup_file_bytes"] = content
+                data["backup_file_name"] = Path(filename).name
                 continue
             content_type = headers.get("content-type", "application/octet-stream").split(";", 1)[0].lower()
             if content_type not in ALLOWED_IMAGE_TYPES:
@@ -1014,7 +1319,7 @@ def page(title, body, base_path=""):
     }}
     .filters {{
       display: grid;
-      grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr) auto auto;
+      grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr) auto auto auto;
       gap: 8px;
       align-items: end;
     }}
@@ -1027,6 +1332,54 @@ def page(title, body, base_path=""):
     .view-switch .btn.active {{
       background: color-mix(in srgb, var(--accent) 12%, var(--panel));
       border-color: var(--accent);
+    }}
+    .expiry-notice {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin: 0 0 10px;
+      padding: 8px 10px;
+      border: 1px solid #f59e0b;
+      border-radius: 10px;
+      color: #92400e;
+      background: #fff7df;
+      font-size: .88rem;
+      font-weight: 750;
+      text-decoration: none;
+    }}
+    .expiry-notice svg {{
+      flex: 0 0 auto;
+      width: 18px;
+      height: 18px;
+      fill: none;
+      stroke: currentColor;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-width: 2;
+    }}
+    .expiry-notice-copy {{
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+    }}
+    .expiry-notice-action {{
+      white-space: nowrap;
+    }}
+    .expiry-filter-label {{
+      display: flex;
+      align-items: center;
+      align-self: center;
+      gap: 7px;
+      min-height: 42px;
+      padding: 0 4px;
+      font-size: .88rem;
+      white-space: nowrap;
+    }}
+    .expiry-filter-label input {{
+      width: auto;
+      margin: 0;
     }}
     .inventory-tabs {{
       display: grid;
@@ -1075,6 +1428,65 @@ def page(title, body, base_path=""):
       border-radius: var(--radius);
       padding: 14px;
       box-shadow: var(--shadow-sm);
+    }}
+    .empty-state {{
+      display: grid;
+      justify-items: start;
+      gap: 7px;
+      padding: 20px;
+      border: 1px dashed color-mix(in srgb, var(--muted) 55%, var(--line));
+      border-radius: var(--radius);
+      background: color-mix(in srgb, var(--panel) 92%, transparent);
+    }}
+    .grid > .empty-state, .item-list > .empty-state {{
+      grid-column: 1 / -1;
+    }}
+    .empty-state-icon {{
+      display: grid;
+      place-items: center;
+      width: 38px;
+      height: 38px;
+      border-radius: 11px;
+      color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 12%, transparent);
+    }}
+    .empty-state-icon svg {{
+      width: 21px;
+      height: 21px;
+      fill: none;
+      stroke: currentColor;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-width: 2;
+    }}
+    .empty-state h2, .empty-state p {{
+      margin: 0;
+    }}
+    .empty-state-actions {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      margin-top: 4px;
+    }}
+    .empty-state-choices {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      width: 100%;
+      margin-top: 4px;
+    }}
+    .empty-choice {{
+      display: grid;
+      gap: 3px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      color: var(--text);
+      background: var(--panel);
+      text-decoration: none;
+    }}
+    .empty-choice strong {{
+      color: var(--accent);
     }}
     .item-card {{
       position: relative;
@@ -2080,12 +2492,76 @@ def query_link(params, **updates):
     return "." + (f"?{query}" if query else "")
 
 
-def item_form(item=None, tag_id="", barcode=""):
+def inventory_empty_state(kind_view, filtered=False, clear_url="."):
+    if filtered:
+        return f"""
+          <section class="empty-state">
+            <span class="empty-state-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="m16 16 4 4"></path></svg>
+            </span>
+            <h2>Ingen treff</h2>
+            <p class="muted">Prøv et annet søk, eller fjern filtrene.</p>
+            <div class="empty-state-actions">
+              <a class="btn primary" href="{clear_url}">Vis hele lageret</a>
+              <a class="btn" href="new?kind={'thing' if kind_view == 'thing' else 'consumable'}">Legg til ny</a>
+            </div>
+          </section>
+        """
+    if kind_view == "thing":
+        return """
+          <section class="empty-state">
+            <span class="empty-state-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M14.5 6.5 17.5 3.5l3 3-3 3"></path><path d="m16 8-8.5 8.5a2.1 2.1 0 0 1-3-3L13 5"></path></svg>
+            </span>
+            <h2>Legg inn første gjenstand</h2>
+            <p class="muted">For verktøy, utstyr og andre ting du vil finne igjen.</p>
+            <div class="empty-state-actions">
+              <a class="btn primary" href="new?kind=thing">Ny gjenstand</a>
+            </div>
+          </section>
+        """
+    if kind_view == "all":
+        return """
+          <section class="empty-state">
+            <span class="empty-state-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M4 8.5 12 4l8 4.5v9L12 22l-8-4.5z"></path><path d="m4 8.5 8 4.5 8-4.5M12 13v9"></path></svg>
+            </span>
+            <h2>Hva vil du legge inn først?</h2>
+            <p class="muted">Velg den enkleste veien for det du har foran deg.</p>
+            <div class="empty-state-choices">
+              <a class="empty-choice" href="scan">
+                <strong>Skann matvare</strong>
+                <span class="muted">Hent navn og bilde fra strekkoden</span>
+              </a>
+              <a class="empty-choice" href="new?kind=thing">
+                <strong>Legg til ting</strong>
+                <span class="muted">Verktøy, utstyr og gjenstander</span>
+              </a>
+            </div>
+          </section>
+        """
+    return """
+      <section class="empty-state">
+        <span class="empty-state-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M4 7h16v10H4zM7 4v3M17 4v3M8 11h8M8 14h5"></path></svg>
+        </span>
+        <h2>Legg inn første forbruksvare</h2>
+        <p class="muted">Skann strekkoden for å hente navn og bilde automatisk.</p>
+        <div class="empty-state-actions">
+          <a class="btn primary" href="scan">Skann strekkode</a>
+          <a class="btn" href="new?kind=consumable">Legg inn manuelt</a>
+        </div>
+      </section>
+    """
+
+
+def item_form(item=None, tag_id="", barcode="", kind="consumable"):
     is_new = item is None
+    kind = kind if kind in ("consumable", "thing") else "consumable"
     item = item or {
         "id": None,
         "name": "",
-        "kind": "consumable",
+        "kind": kind,
         "quantity": 1,
         "opened_quantity": 0,
         "unit": "stk",
@@ -2101,6 +2577,10 @@ def item_form(item=None, tag_id="", barcode=""):
         "note": "",
         "shopping_enabled": 1,
     }
+    is_thing = item["kind"] == "thing"
+    noun = "gjenstanden" if is_thing else "varen"
+    example = "For eksempel Slagdrill" if is_thing else "For eksempel Havregryn"
+    save_label = "Lagre gjenstand" if is_thing else "Lagre vare"
     action = f"item/{item['id']}/edit" if item["id"] else "new"
     checked = "checked" if item["shopping_enabled"] else ""
     image_url = "" if str(item["image_url"]).startswith("data:") else item["image_url"]
@@ -2144,19 +2624,19 @@ def item_form(item=None, tag_id="", barcode=""):
     <form class="stack" method="post" action="{action}" enctype="multipart/form-data">
       <section class="card form-card">
         <h2>Det viktigste</h2>
-        <p class="muted">Du kan lagre varen etter bare navn og antall.</p>
+        <p class="muted">Du kan lagre {noun} etter bare navn og antall.</p>
         <div class="form-grid">
           {barcode_step}
-          <label class="full">Hva heter varen?
-            <input id="item-name" name="name" value="{esc(item['name'])}" placeholder="For eksempel Havregryn" required autofocus>
+          <label class="full">Hva heter {noun}?
+            <input id="item-name" name="name" value="{esc(item['name'])}" placeholder="{example}" required autofocus>
           </label>
           <label>Antall
             <input name="quantity" type="number" step="0.01" value="{fmt_num(item['quantity'])}" inputmode="decimal">
           </label>
           <label>Type
             <select name="kind" id="item-kind">
-              <option value="consumable" {"selected" if item['kind'] == 'consumable' else ""}>Forbruksvare</option>
-              <option value="thing" {"selected" if item['kind'] == 'thing' else ""}>Gjenstand</option>
+              <option value="consumable" {"selected" if item['kind'] == 'consumable' else ""}>Forbruk</option>
+              <option value="thing" {"selected" if item['kind'] == 'thing' else ""}>Ting</option>
             </select>
           </label>
           <label class="full">Plassering
@@ -2275,7 +2755,7 @@ def item_form(item=None, tag_id="", barcode=""):
       </details>
 
       <div class="actions">
-        <button class="btn primary">Lagre vare</button>
+        <button class="btn primary">{save_label}</button>
         <a class="btn" href=".">Avbryt</a>
       </div>
     </form>
@@ -2780,6 +3260,15 @@ def shopping_list_page():
 def organize_page():
     locations = distinct_values("location")
     categories = distinct_values("category")
+    alerts = create_alerts_payload()
+    alert_summary = alerts["summary"]
+    if alert_summary["total"]:
+        alert_status = (
+            f'{alert_summary["low_stock"]} må kjøpes · '
+            f'{alert_summary["best_before"]} med nær best før'
+        )
+    else:
+        alert_status = "Ingen varer krever oppmerksomhet nå"
     location_list = "".join(f"<li>{esc(value)}</li>" for value in locations) or "<li>Ingen steder ennå</li>"
     category_list = "".join(f"<li>{esc(value)}</li>" for value in categories) or "<li>Ingen kategorier ennå</li>"
     return f"""
@@ -2807,6 +3296,43 @@ def organize_page():
         </form>
         <ul>{category_list}</ul>
       </div>
+    </section>
+    <section class="card" style="margin-top: 10px;">
+      <h2>Home Assistant-varsler</h2>
+      <p class="muted">{esc(alert_status)}</p>
+      <p>Hjemmelager kan nå levere én samlet status for handleliste og best før til en Home Assistant-automatisering.</p>
+      <div class="actions">
+        <a class="btn primary" href="api/alerts">Test varseldata</a>
+      </div>
+      <p class="field-help">Ferdig sensor og automatisering følger med under <strong>examples</strong>. Velg selv hvilken mobil som skal motta varselet.</p>
+    </section>
+    <section class="card" style="margin-top: 10px;">
+      <h2>Data og sikkerhetskopi</h2>
+      <p class="muted">Last ned en komplett kopi av varer, bilder, steder, kategorier og historikk.</p>
+      <a class="btn primary" href="backup/download">Last ned sikkerhetskopi</a>
+      <p class="field-help">Filen endrer ingenting i lageret. Oppbevar den et trygt sted.</p>
+      <details class="form-section" style="margin-top: 10px;">
+        <summary>
+          <span class="form-section-summary">
+            Gjenopprett fra fil
+            <small>Kontrolleres før data erstattes</small>
+          </span>
+        </summary>
+        <div class="form-section-content">
+          <form class="stack" method="post" action="backup/restore"
+                enctype="multipart/form-data"
+                onsubmit="return confirm('Vil du erstatte dagens lager med innholdet i sikkerhetskopien?')">
+            <label style="padding-top: 10px;">Sikkerhetskopifil
+              <input name="backup_file" type="file" accept=".json,application/json" required>
+            </label>
+            <label>
+              <span><input name="confirm_restore" type="checkbox" value="1" required>
+                Jeg forstår at dagens lager blir erstattet</span>
+            </label>
+            <button class="btn warn">Gjenopprett lager</button>
+          </form>
+        </div>
+      </details>
     </section>
     """
 
@@ -2852,6 +3378,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def send_download(self, data, filename, content_type):
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def send_static(self, rel_path, content_type):
         target = (STATIC_DIR / rel_path).resolve()
         if not str(target).startswith(str(STATIC_DIR.resolve())) or not target.is_file():
@@ -2876,6 +3411,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_static("zxing-browser.min.js", "text/javascript; charset=utf-8")
             return
 
+        if path == "backup/download":
+            payload = create_backup_payload()
+            data = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+            filename = f"hjemmelager-backup-{date.today().isoformat()}.json"
+            self.send_download(data, filename, "application/json; charset=utf-8")
+            return
+
         if path in ("", "items"):
             query = parse_qs(urlparse(self.path).query)
             search = (query.get("q") or [""])[0].strip()
@@ -2886,51 +3428,107 @@ class Handler(BaseHTTPRequestHandler):
             if kind_view not in ("consumable", "thing", "all"):
                 kind_view = "consumable"
             low_only = (query.get("low") or [""])[0] == "1"
+            expiry_only = (query.get("expiry") or [""])[0] == "1"
             if kind_view == "thing":
                 low_only = False
+                expiry_only = False
             where, params = build_item_filters(
                 search,
                 category,
                 location,
                 low_only,
                 "" if kind_view == "all" else kind_view,
+                expiry_only,
             )
-            items = list_items(where, params)
+            items = list_items(
+                where,
+                params,
+                sort="best_before" if expiry_only else "default",
+            )
             categories = distinct_values("category")
             locations = distinct_values("location")
             consumable_count = count_items("consumable")
             thing_count = count_items("thing")
+            expiry_threshold = (date.today() + timedelta(days=14)).isoformat()
+            expiring_count = len(
+                list_items(
+                    "kind = 'consumable' and best_before != '' and best_before <= ?",
+                    (expiry_threshold,),
+                )
+            )
             current_params = {
                 "q": search,
                 "category": category,
                 "location": location,
                 "low": "1" if low_only else "",
+                "expiry": "1" if expiry_only else "",
                 "view": view,
                 "kind": kind_view,
             }
             card_url = query_link(current_params, view="cards")
             list_url = query_link(current_params, view="list")
-            low_url = query_link(current_params, low="" if low_only else "1")
+            low_url = query_link(
+                current_params,
+                low="" if low_only else "1",
+                expiry="",
+            )
+            expiry_url = query_link(
+                {
+                    "view": view,
+                    "kind": "consumable" if kind_view == "thing" else kind_view,
+                },
+                expiry="" if expiry_only else "1",
+            )
             clear_url = query_link({"view": view, "kind": kind_view})
             consumable_url = query_link({"view": view, "kind": "consumable"})
             thing_url = query_link({"view": view, "kind": "thing"})
             all_url = query_link({"view": view, "kind": "all"})
-            empty_label = {
-                "consumable": "Ingen forbruksvarer passer valgene.",
-                "thing": "Ingen ting passer valgene.",
-                "all": "Ingen treff i lageret.",
-            }[kind_view]
+            filtered = bool(
+                search
+                or category
+                or location
+                or low_only
+                or expiry_only
+            )
+            empty_html = inventory_empty_state(
+                kind_view,
+                filtered=filtered,
+                clear_url=clear_url,
+            )
             if view == "list":
-                items_html = "".join(item_row(item) for item in items) or f'<div class="card">{empty_label}</div>'
+                items_html = "".join(item_row(item) for item in items) or empty_html
                 items_html = f'<section class="item-list">{items_html}</section>'
             else:
-                items_html = "".join(item_card(item) for item in items) or f'<div class="card">{empty_label}</div>'
+                items_html = "".join(item_card(item) for item in items) or empty_html
                 items_html = f'<section class="grid">{items_html}</section>'
             low_filter = (
                 f'<a class="btn {"active" if low_only else ""}" href="{low_url}">Må kjøpes</a>'
                 if kind_view != "thing"
                 else ""
             )
+            expiry_notice = ""
+            if (
+                expiring_count
+                and kind_view != "thing"
+                and (not filtered or expiry_only)
+            ):
+                expiry_label = (
+                    f"{expiring_count} vare{'r' if expiring_count != 1 else ''} "
+                    "er utløpt eller bør brukes snart"
+                )
+                expiry_action = "Vis alle" if expiry_only else "Vis"
+                expiry_notice = f"""
+                  <a class="expiry-notice" href="{expiry_url}">
+                    <span class="expiry-notice-copy">
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <circle cx="12" cy="12" r="9"></circle>
+                        <path d="M12 7v5l3 2"></path>
+                      </svg>
+                      <span>{expiry_label}</span>
+                    </span>
+                    <span class="expiry-notice-action">{expiry_action} →</span>
+                  </a>
+                """
             body = f"""
               <h1 class="inventory-title">Mitt lager</h1>
               <nav class="inventory-tabs" aria-label="Type lager">
@@ -2965,6 +3563,10 @@ class Handler(BaseHTTPRequestHandler):
                     <label>Kategori
                       <select name="category">{option_list(categories, category, "Alle kategorier")}</select>
                     </label>
+                    <label class="expiry-filter-label">
+                      <input type="checkbox" name="expiry" value="1" {"checked" if expiry_only else ""}>
+                      Best før innen 14 dager
+                    </label>
                     <button class="btn primary">Bruk filtre</button>
                     <a class="btn" href="{clear_url}">Nullstill</a>
                   </div>
@@ -2975,6 +3577,7 @@ class Handler(BaseHTTPRequestHandler):
                   {low_filter}
                 </div>
               </form>
+              {expiry_notice}
               {items_html}
               <script>
                 if (window.matchMedia("(max-width: 680px)").matches) {{
@@ -2989,7 +3592,13 @@ class Handler(BaseHTTPRequestHandler):
             query = parse_qs(urlparse(self.path).query)
             tag_id = (query.get("tag_id") or [""])[0]
             barcode = (query.get("barcode") or [""])[0]
-            self.send_html("Ny vare", f"<h1>Ny vare</h1>{item_form(tag_id=tag_id, barcode=barcode)}")
+            kind = (query.get("kind") or ["consumable"])[0]
+            kind = kind if kind in ("consumable", "thing") else "consumable"
+            title = "Ny gjenstand" if kind == "thing" else "Ny vare"
+            self.send_html(
+                title,
+                f"<h1>{title}</h1>{item_form(tag_id=tag_id, barcode=barcode, kind=kind)}",
+            )
             return
 
         if path == "scan":
@@ -3141,6 +3750,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"items": list_items("kind = 'consumable' and shopping_enabled = 1 and min_quantity > 0 and quantity <= min_quantity")})
             return
 
+        if path == "api/alerts":
+            query = parse_qs(urlparse(self.path).query)
+            days = (query.get("days") or ["14"])[0]
+            self.send_json(create_alerts_payload(days))
+            return
+
         if path == "api/locations":
             self.send_json({"locations": distinct_values("location")})
             return
@@ -3188,7 +3803,69 @@ class Handler(BaseHTTPRequestHandler):
         try:
             data = self.read_body()
         except Exception as exc:
+            if path == "backup/restore":
+                self.send_html(
+                    "Kunne ikke gjenopprette",
+                    f"""
+                      <div class="card">
+                        <h1>Kunne ikke gjenopprette</h1>
+                        <p>{esc(exc)}</p>
+                        <a class="btn" href="organize">Tilbake til Mer</a>
+                      </div>
+                    """,
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
             self.send_json({"error": f"Invalid body: {exc}"}, HTTPStatus.BAD_REQUEST)
+            return
+
+        if path == "backup/restore":
+            if str(data.get("confirm_restore", "0")).lower() not in (
+                "1",
+                "true",
+                "on",
+                "yes",
+            ):
+                self.send_html(
+                    "Bekreft gjenoppretting",
+                    """
+                      <div class="card">
+                        <h1>Bekreft gjenoppretting</h1>
+                        <p>Du må bekrefte at dagens lager blir erstattet.</p>
+                        <a class="btn" href="organize">Tilbake til Mer</a>
+                      </div>
+                    """,
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
+            try:
+                payload = parse_backup_bytes(data.get("backup_file_bytes"))
+                result = restore_backup_payload(payload)
+            except (ValueError, sqlite3.Error, OSError) as exc:
+                self.send_html(
+                    "Kunne ikke gjenopprette",
+                    f"""
+                      <div class="card">
+                        <h1>Ingen data ble erstattet</h1>
+                        <p>{esc(exc)}</p>
+                        <a class="btn" href="organize">Tilbake til Mer</a>
+                      </div>
+                    """,
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
+            self.send_html(
+                "Gjenoppretting fullført",
+                f"""
+                  <div class="card">
+                    <h1>Gjenoppretting fullført ✓</h1>
+                    <p>{result["items"]} varer og {result["events"]} historikkhendelser ble lest inn.</p>
+                    <p class="muted">En automatisk før-kopi er lagret som
+                      <strong>{esc(result["before_filename"])}</strong> i add-onens dataområde.</p>
+                    <a class="btn primary" href=".">Åpne lageret</a>
+                  </div>
+                """,
+            )
             return
 
         if path == "new":

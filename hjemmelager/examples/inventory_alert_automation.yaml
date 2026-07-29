@@ -1,0 +1,19 @@
+alias: Hjemmelager - daglig lagerpåminnelse
+description: Varsler om varer som må kjøpes eller nærmer seg best før.
+mode: single
+triggers:
+  - trigger: time
+    at: "08:00:00"
+actions:
+  - action: homeassistant.update_entity
+    target:
+      entity_id: sensor.hjemmelager_varsler
+  - delay: "00:00:03"
+  - condition: template
+    value_template: "{{ states('sensor.hjemmelager_varsler') | int(0) > 0 }}"
+  # Bytt notify.notify til notify.mobile_app_<navnet_på_telefonen>
+  # hvis du vil velge en bestemt mobil.
+  - action: notify.notify
+    data:
+      title: Hjemmelager
+      message: "{{ state_attr('sensor.hjemmelager_varsler', 'message') }}"

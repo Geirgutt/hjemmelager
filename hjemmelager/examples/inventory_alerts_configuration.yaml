@@ -1,0 +1,17 @@
+# Legg denne blokken i configuration.yaml.
+# Port 8099 må være aktivert under Hjemmelager → Network.
+sensor:
+  - platform: rest
+    name: Hjemmelager varsler
+    unique_id: hjemmelager_varsler
+    resource: "http://homeassistant.local:8099/api/alerts"
+    scan_interval: 3600
+    timeout: 10
+    value_template: "{{ value_json.summary.total }}"
+    json_attributes:
+      - summary
+      - message
+      - low_stock
+      - best_before
+    unit_of_measurement: varer
+    icon: mdi:archive-alert

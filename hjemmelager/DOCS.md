@@ -107,7 +107,7 @@ Hvis kamera fortsatt ikke starter, bruk feltet **Manuell kode** på samme side. 
 
 ## Pris, holdbarhet og åpne pakker
 
-Varer kan ha pris og holdbarhetsdato. Datoen er et enkelt datofelt og brukes foreløpig som informasjon på varen.
+Varer kan ha pris og holdbarhetsdato. Utløpte varer og varer med best før-dato innen 14 dager får et tydelig merke. Når slike varer finnes, vises en kompakt rad på lageroversikten som åpner en ferdig filtrert liste med nærmeste dato først. Det samme valget finnes under filterikonet.
 
 For forbruksvarer kan du skille mellom uåpnede varer på lager og åpne pakker:
 
@@ -124,6 +124,7 @@ Alle endepunkter bruker JSON.
 GET  /api/version
 GET  /api/items
 GET  /api/low-stock
+GET  /api/alerts
 POST /api/items
 POST /api/items/{id}/adjust
 POST /api/items/{id}/open
@@ -139,6 +140,20 @@ curl -X POST http://homeassistant.local:8099/api/tag/04-AB-CD/adjust \
   -H "Content-Type: application/json" \
   -d '{"delta": -1}'
 ```
+
+`GET /api/alerts` samler lav beholdning og best før i ett svar som er laget for Home Assistant. `summary.total` er antall unike varer som trenger oppmerksomhet, mens `message` er ferdig tekst til et varsel. Bruk for eksempel `?days=30` for å se 30 dager frem; verdien begrenses til 1–90 dager.
+
+## Home Assistant-varsler
+
+Oppsettet består av en lokal REST-sensor og en daglig automatisering. Ingen passord, skytjeneste eller ekstern konto er nødvendig.
+
+1. Aktiver port `8099` under **Hjemmelager → Network**.
+2. Legg inn sensorblokken fra `hjemmelager/examples/inventory_alerts_configuration.yaml` i `configuration.yaml`.
+3. Kontroller konfigurasjonen og start Home Assistant på nytt.
+4. Opprett en automatisering med innholdet fra `hjemmelager/examples/inventory_alert_automation.yaml`.
+5. Bytt `notify.notify` til telefonens handling, for eksempel `notify.mobile_app_navnet_pa_telefonen`, hvis varselet skal til en bestemt mobil.
+
+Sensoren spør Hjemmelager lokalt én gang i timen. Automatiseringen oppdaterer den på nytt klokken 08:00 og sender bare varsel når minst én vare må kjøpes eller har passert/nærmer seg best før. Tidspunktet kan endres direkte i automatiseringen.
 
 ## Oppdatering
 
@@ -206,6 +221,14 @@ hjemmelager/examples/daily_update_check.yaml
 
 Data lagres i add-onens `/data/hjemmelager.db`, så databasen overlever restart og oppdatering av add-onen.
 
+### Last ned egen sikkerhetskopi
+
+Åpne **Mer**, finn **Data og sikkerhetskopi**, og trykk **Last ned sikkerhetskopi**. Filen inneholder varer, bilder, steder, kategorier og historikk i et lesbart JSON-format. Nedlastingen endrer ingenting i Hjemmelager.
+
+Oppbevar filen på en annen enhet enn Raspberry Pi-en. Home Assistant sine vanlige sikkerhetskopier bør fortsatt brukes i tillegg.
+
+Fra samme panel kan du åpne **Gjenopprett fra fil** og velge en tidligere sikkerhetskopi. Hjemmelager kontrollerer filen før noe endres, ber om en tydelig bekreftelse og lager automatisk en ekstra kopi av dagens data før gjenopprettingen starter. En gjenoppretting erstatter dagens varer, steder, kategorier og historikk med innholdet i sikkerhetskopien.
+
 ## Versjon og kodenavn
 
 Hver godkjente versjon skal ha både versjonsnummer og kodenavn.
@@ -213,7 +236,7 @@ Hver godkjente versjon skal ha både versjonsnummer og kodenavn.
 Gjeldende versjon er:
 
 ```text
-0.2.1 - Første hylle
+0.5.0 - Trygg oversikt
 ```
 
 Kontroller installert versjon på én av disse måtene:
@@ -235,6 +258,8 @@ hjemmelager/DOCS.md          denne kontrollseksjonen
 ```
 
 ## Første anbefalte arbeidsflyt
+
+Et tomt lager viser to enkle veier videre: skann en matvare med strekkode, eller legg til en gjenstand som verktøy og utstyr. Tomme søk og filtre viser en egen **Vis hele lageret**-knapp, slik at brukeren ikke blir stående fast.
 
 1. Opprett lokasjoner som tekst, for eksempel `Bod > Hylle 2 > Boks A`.
 2. Legg NFC-tag på boksen, skuffen eller varen.
