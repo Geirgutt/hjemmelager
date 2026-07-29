@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0 - Første hylle
+
+- Gjorde mobilgrensesnittet enklere med fast bunnmeny, tydeligere varekort, søk og sammenleggbare filtre.
+- Forbedret bilder, lagertekster og handlinger for forbruksvarer og gjenstander.
+- Fikset relative lenker slik at redigering ikke havner i en ugyldig navigasjonsløkke.
+
 ## 0.2.1 - Første hylle
 
 - La inn diagnostikk på Scan-siden for HTTPS, nettleser-API-er, ZXing og valgte kameraenheter.

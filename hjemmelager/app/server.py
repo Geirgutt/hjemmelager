@@ -12,7 +12,7 @@ from urllib.parse import urlencode, parse_qs, unquote, urlparse
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "0.2.1"
+APP_VERSION = "0.3.0"
 APP_CODENAME = "Første hylle"
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
@@ -472,7 +472,31 @@ def scanned_code_redirect(code):
 
 
 def page(title, body, base_path=""):
-    base = esc(base_path.rstrip("/") + "/" if base_path else "")
+    base = esc(base_path.rstrip("/") + "/" if base_path else "/")
+    active_page = {
+        "Varer": "items",
+        "Lav beholdning": "low",
+        "Scan kode": "scan",
+        "Ny vare": "new",
+        "Steder og kategorier": "organize",
+    }.get(title, "")
+
+    def nav_class(page_name, primary=False):
+        classes = ["nav"]
+        if primary:
+            classes.append("primary")
+        if page_name == active_page:
+            classes.append("active")
+        return " ".join(classes)
+
+    def mobile_nav_class(page_name, primary=False):
+        classes = ["mobile-nav-link"]
+        if primary:
+            classes.append("primary")
+        if page_name == active_page:
+            classes.append("active")
+        return " ".join(classes)
+
     return f"""<!doctype html>
 <html lang="no">
 <head>
@@ -492,6 +516,8 @@ def page(title, body, base_path=""):
       --accent-2: #bc6c25;
       --danger: #b42318;
       --ok: #1f7a4d;
+      --shadow-sm: 0 1px 2px rgb(15 23 42 / 5%), 0 5px 18px rgb(15 23 42 / 4%);
+      --radius: 14px;
     }}
     @media (prefers-color-scheme: dark) {{
       :root {{
@@ -512,7 +538,7 @@ def page(title, body, base_path=""):
     header {{
       position: sticky;
       top: 0;
-      z-index: 2;
+      z-index: 10;
       background: color-mix(in srgb, var(--panel) 94%, transparent);
       border-bottom: 1px solid var(--line);
       backdrop-filter: blur(10px);
@@ -530,9 +556,10 @@ def page(title, body, base_path=""):
     }}
     .brand {{
       font-weight: 750;
-      font-size: 1.1rem;
+      font-size: 1.16rem;
       color: var(--text);
       text-decoration: none;
+      letter-spacing: -.02em;
     }}
     nav {{
       display: flex;
@@ -543,7 +570,7 @@ def page(title, body, base_path=""):
     a, button {{ touch-action: manipulation; }}
     .nav, .btn {{
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: 10px;
       color: var(--text);
       background: var(--panel);
       padding: 8px 11px;
@@ -551,10 +578,23 @@ def page(title, body, base_path=""):
       font-weight: 650;
       cursor: pointer;
     }}
+    .nav.active {{
+      color: var(--accent);
+      border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+      background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+    }}
     .btn.primary, .nav.primary {{
       background: var(--accent);
       border-color: var(--accent);
       color: white;
+    }}
+    .btn:hover, .nav:hover {{
+      border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+    }}
+    .btn:focus-visible, .nav:focus-visible, input:focus-visible, select:focus-visible,
+    textarea:focus-visible, summary:focus-visible, .mobile-nav-link:focus-visible {{
+      outline: 3px solid color-mix(in srgb, var(--accent) 25%, transparent);
+      outline-offset: 2px;
     }}
     .btn.warn {{ color: white; background: var(--accent-2); border-color: var(--accent-2); }}
     .btn.danger {{ color: white; background: var(--danger); border-color: var(--danger); }}
@@ -568,9 +608,29 @@ def page(title, body, base_path=""):
       gap: 10px;
       margin-bottom: 14px;
     }}
+    .search-row {{
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: end;
+    }}
+    .search-row label {{
+      min-width: 0;
+    }}
+    .filter-panel {{
+      border: 0;
+    }}
+    .filter-panel summary {{
+      display: none;
+      cursor: pointer;
+      font-weight: 750;
+    }}
+    .filter-panel summary::marker {{
+      color: var(--accent);
+    }}
     .filters {{
       display: grid;
-      grid-template-columns: minmax(180px, 1.6fr) minmax(140px, 1fr) minmax(140px, 1fr) auto auto;
+      grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr) auto auto;
       gap: 8px;
       align-items: end;
     }}
@@ -578,6 +638,7 @@ def page(title, body, base_path=""):
       display: flex;
       gap: 8px;
       flex-wrap: wrap;
+      align-items: center;
     }}
     .view-switch .btn.active {{
       background: color-mix(in srgb, var(--accent) 12%, var(--panel));
@@ -586,24 +647,77 @@ def page(title, body, base_path=""):
     .card {{
       background: var(--panel);
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: var(--radius);
       padding: 14px;
+      box-shadow: var(--shadow-sm);
     }}
     .item-card {{
+      position: relative;
       display: grid;
       grid-template-columns: 76px 1fr;
       gap: 12px;
       align-items: start;
+      transition: border-color .16s ease, transform .16s ease, box-shadow .16s ease;
+    }}
+    .item-card:hover {{
+      border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+      transform: translateY(-1px);
+      box-shadow: 0 10px 28px rgb(15 23 42 / 9%);
     }}
     .item-thumb {{
       width: 76px;
       aspect-ratio: 1;
-      border-radius: 8px;
+      border-radius: 11px;
       border: 1px solid var(--line);
-      object-fit: cover;
-      background: color-mix(in srgb, var(--line) 35%, transparent);
+      object-fit: contain;
+      padding: 4px;
+      background: #fff;
+    }}
+    .item-hero {{
+      display: block;
+      width: 100%;
+      max-height: 320px;
+      margin-bottom: 14px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      object-fit: contain;
+      background: #fff;
     }}
     .item-main {{ min-width: 0; }}
+    .item-name-link {{
+      color: var(--text);
+      text-decoration: none;
+    }}
+    .item-name-link::after {{
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+    }}
+    .item-meta {{
+      display: grid;
+      gap: 3px;
+      font-size: .92rem;
+    }}
+    .item-meta-line {{
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }}
+    .item-card .actions {{
+      position: relative;
+      z-index: 1;
+    }}
+    .item-card .qty {{
+      font-size: 1.72rem;
+      margin-bottom: 0;
+    }}
+    .opened-count {{
+      margin-top: 1px;
+      font-size: .92rem;
+    }}
     .item-list {{
       display: grid;
       gap: 6px;
@@ -623,8 +737,9 @@ def page(title, body, base_path=""):
       aspect-ratio: 1;
       border-radius: 7px;
       border: 1px solid var(--line);
-      object-fit: cover;
-      background: color-mix(in srgb, var(--line) 35%, transparent);
+      object-fit: contain;
+      padding: 3px;
+      background: #fff;
     }}
     .item-row-title {{
       min-width: 0;
@@ -710,7 +825,7 @@ def page(title, body, base_path=""):
     input, select, textarea {{
       width: 100%;
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: 10px;
       background: var(--panel);
       color: var(--text);
       padding: 10px;
@@ -725,14 +840,82 @@ def page(title, body, base_path=""):
     .full {{ grid-column: 1 / -1; }}
     table {{ width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 8px; overflow: hidden; }}
     th, td {{ padding: 10px; border-bottom: 1px solid var(--line); text-align: left; }}
+    .mobile-nav {{
+      display: none;
+    }}
+    .sr-only {{
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }}
     @media (max-width: 680px) {{
-      .bar {{ align-items: flex-start; flex-direction: column; }}
-      nav {{ justify-content: flex-start; }}
+      body {{
+        padding-bottom: calc(78px + env(safe-area-inset-bottom));
+      }}
+      header .bar {{
+        min-height: 54px;
+        padding: 10px 14px;
+      }}
+      header nav {{
+        display: none;
+      }}
+      main {{
+        padding-top: 12px;
+      }}
+      footer {{
+        display: none !important;
+      }}
+      h1 {{
+        margin-top: 2px;
+        margin-bottom: 12px;
+      }}
+      .search-row {{
+        grid-template-columns: minmax(0, 1fr) auto;
+      }}
+      .search-row .btn {{
+        min-height: 44px;
+      }}
+      .filter-panel {{
+        display: block;
+      }}
+      .filter-panel summary {{
+        display: inline-flex;
+        align-items: center;
+        min-height: 42px;
+        padding: 8px 11px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--panel);
+      }}
+      .filter-panel .filters {{
+        margin-top: 10px;
+      }}
       .filters {{ grid-template-columns: 1fr; }}
       .form-grid {{ grid-template-columns: 1fr; }}
       .qty {{ font-size: 1.7rem; }}
-      .item-card {{ grid-template-columns: 64px 1fr; }}
+      .grid {{
+        gap: 10px;
+      }}
+      .item-card {{
+        grid-template-columns: 64px minmax(0, 1fr);
+        padding: 13px;
+      }}
       .item-thumb {{ width: 64px; }}
+      .item-card .actions {{
+        gap: 6px;
+      }}
+      .item-card .actions .btn {{
+        min-height: 40px;
+      }}
+      .item-card .actions .details-link {{
+        margin-left: auto;
+      }}
       .item-row {{
         grid-template-columns: 44px minmax(0, 1fr) auto;
       }}
@@ -743,6 +926,58 @@ def page(title, body, base_path=""):
         grid-column: 2 / -1;
         justify-content: flex-start;
       }}
+      .mobile-nav {{
+        position: fixed;
+        inset: auto 0 0;
+        z-index: 20;
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        align-items: end;
+        min-height: 70px;
+        padding: 7px 8px calc(7px + env(safe-area-inset-bottom));
+        border-top: 1px solid var(--line);
+        background: color-mix(in srgb, var(--panel) 96%, transparent);
+        box-shadow: 0 -8px 28px rgb(0 0 0 / 9%);
+        backdrop-filter: blur(14px);
+      }}
+      .mobile-nav-link {{
+        display: grid;
+        justify-items: center;
+        gap: 3px;
+        min-width: 0;
+        padding: 5px 2px;
+        border-radius: 12px;
+        color: var(--muted);
+        font-size: .69rem;
+        font-weight: 750;
+        line-height: 1;
+        text-decoration: none;
+      }}
+      .mobile-nav-link svg {{
+        width: 22px;
+        height: 22px;
+        fill: none;
+        stroke: currentColor;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        stroke-width: 2;
+      }}
+      .mobile-nav-link.active {{
+        color: var(--accent);
+      }}
+      .mobile-nav-link.primary {{
+        color: white;
+      }}
+      .mobile-nav-link.primary svg {{
+        box-sizing: content-box;
+        margin-top: -17px;
+        padding: 13px;
+        border: 5px solid var(--bg);
+        border-radius: 50%;
+        color: white;
+        background: var(--accent);
+        box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 38%, transparent);
+      }}
     }}
   </style>
 </head>
@@ -751,15 +986,37 @@ def page(title, body, base_path=""):
     <div class="bar">
       <a class="brand" href=".">{APP_NAME}</a>
       <nav>
-        <a class="nav" href=".">Varer</a>
-        <a class="nav" href="scan">Scan</a>
-        <a class="nav" href="low-stock">Lav beholdning</a>
-        <a class="nav" href="organize">Steder</a>
-        <a class="nav primary" href="new">Ny</a>
+        <a class="{nav_class("items")}" href=".">Varer</a>
+        <a class="{nav_class("scan")}" href="scan">Scan</a>
+        <a class="{nav_class("low")}" href="low-stock">Lav beholdning</a>
+        <a class="{nav_class("organize")}" href="organize">Steder</a>
+        <a class="{nav_class("new", True)}" href="new">Ny</a>
       </nav>
     </div>
   </header>
   <main>{body}</main>
+  <nav class="mobile-nav" aria-label="Hovedmeny">
+    <a class="{mobile_nav_class("items")}" href=".">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5h16v12H4z"/><path d="M7 4.5h10l3 3H4z"/><path d="M9 11.5h6"/></svg>
+      <span>Lager</span>
+    </a>
+    <a class="{mobile_nav_class("scan")}" href="scan">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4"/><path d="M8 12h8"/></svg>
+      <span>Scan</span>
+    </a>
+    <a class="{mobile_nav_class("new", True)}" href="new">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+      <span>Ny</span>
+    </a>
+    <a class="{mobile_nav_class("low")}" href="low-stock">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h2l2.2 9h8.9l2-6H7"/><circle cx="10" cy="19" r="1"/><circle cx="17" cy="19" r="1"/></svg>
+      <span>Handleliste</span>
+    </a>
+    <a class="{mobile_nav_class("organize")}" href="organize">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+      <span>Mer</span>
+    </a>
+  </nav>
   <footer class="bar muted" style="padding-top: 24px; padding-bottom: 24px;">
     {APP_NAME} v{APP_VERSION} · Kodenavn {APP_CODENAME}
   </footer>
@@ -768,29 +1025,42 @@ def page(title, body, base_path=""):
 
 
 def item_card(item):
-    low = '<span class="pill low">Lav</span>' if item["is_low"] else ""
-    meta = " · ".join(filter(None, [item["category"], item["location"]]))
-    kind = "Forbruksvare" if item["kind"] == "consumable" else "Gjenstand"
-    price = f"Pris {fmt_price(item['price'])}" if fmt_price(item["price"]) else ""
-    best_before = f"Holdbar {item['best_before']}" if item["best_before"] else ""
-    meta = " · ".join(filter(None, [item["category"], item["location"], price, best_before]))
+    low = '<span class="pill low">Kjøp inn</span>' if item["is_low"] else ""
+    category = item["category"] or ("Forbruksvare" if item["kind"] == "consumable" else "Gjenstand")
+    location = item["location"] or "Ingen plassering"
+    price = f"{fmt_price(item['price'])} kr" if fmt_price(item["price"]) else ""
+    best_before = f"Best før {item['best_before']}" if item["best_before"] else ""
+    extra = " · ".join(filter(None, [price, best_before]))
+    quantity_label = (
+        f"{fmt_num(item['quantity'])} {esc(item['unit'])} på lager"
+        if item["kind"] == "consumable"
+        else f"{fmt_num(item['quantity'])} {esc(item['unit'])}"
+    )
+    opened = ""
+    open_action = ""
+    if item["kind"] == "consumable":
+        opened = f'<div class="opened-count muted">{fmt_num(item["opened_quantity"])} {esc(item["unit"])} åpne</div>'
+        open_action = f'<form method="post" action="item/{item["id"]}/open"><button class="btn" title="Flytt en fra lager til åpnet">Åpne</button></form>'
     thumb = f'<a href="item/{item["id"]}"><img class="item-thumb" src="{esc(item["image_url"])}" alt=""></a>' if item["image_url"] else '<div class="item-thumb" aria-hidden="true"></div>'
     return f"""
     <article class="card item-card">
       {thumb}
       <div class="item-main">
         <div class="item-title">
-          <h2><a href="item/{item['id']}">{esc(item['name'])}</a></h2>
+          <h2><a class="item-name-link" href="item/{item['id']}">{esc(item['name'])}</a></h2>
           {low}
         </div>
-        <div class="muted">{esc(kind)}{(" · " + esc(meta)) if meta else ""}</div>
-        <div class="qty">{fmt_num(item['quantity'])} <span class="muted">{esc(item['unit'])} nye</span></div>
-        <div class="muted">{fmt_num(item['opened_quantity'])} {esc(item['unit'])} åpne</div>
+        <div class="item-meta muted">
+          <div class="item-meta-line">{esc(category)} · {esc(location)}</div>
+          {f'<div class="item-meta-line">{esc(extra)}</div>' if extra else ''}
+        </div>
+        <div class="qty">{quantity_label}</div>
+        {opened}
         <div class="actions">
-          <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn" title="Ta ut en">-1</button></form>
-          <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="1"><button class="btn" title="Legg til en">+1</button></form>
-          <form method="post" action="item/{item['id']}/open"><button class="btn" title="Flytt en fra nye til åpne">Åpne</button></form>
-          <a class="btn" href="item/{item['id']}">Detaljer</a>
+          <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn" aria-label="Reduser {esc(item['name'])} med én">−</button></form>
+          <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="1"><button class="btn primary" aria-label="Øk {esc(item['name'])} med én">+</button></form>
+          {open_action}
+          <a class="btn details-link" href="item/{item['id']}">Se vare</a>
         </div>
       </div>
     </article>
@@ -798,11 +1068,21 @@ def item_card(item):
 
 
 def item_row(item):
-    low = '<span class="pill low">Lav</span>' if item["is_low"] else ""
+    low = '<span class="pill low">Kjøp inn</span>' if item["is_low"] else ""
     thumb = f'<a href="item/{item["id"]}"><img class="item-row-thumb" src="{esc(item["image_url"])}" alt=""></a>' if item["image_url"] else '<div class="item-row-thumb" aria-hidden="true"></div>'
     category = item["category"] or ("Forbruksvare" if item["kind"] == "consumable" else "Gjenstand")
     location = item["location"] or "Uten plassering"
-    opened = f"{fmt_num(item['opened_quantity'])} åpne" if float(item["opened_quantity"] or 0) else ""
+    opened = (
+        f"{fmt_num(item['opened_quantity'])} åpne"
+        if item["kind"] == "consumable" and float(item["opened_quantity"] or 0)
+        else ""
+    )
+    open_action = (
+        f'<form method="post" action="item/{item["id"]}/open"><button class="btn" title="Flytt en fra lager til åpnet">Åpne</button></form>'
+        if item["kind"] == "consumable"
+        else ""
+    )
+    stock_suffix = f"{esc(item['unit'])} på lager" if item["kind"] == "consumable" else esc(item["unit"])
     return f"""
     <article class="item-row">
       {thumb}
@@ -812,11 +1092,11 @@ def item_row(item):
       </div>
       <div class="item-row-meta muted">{esc(location)}</div>
       <div class="item-row-location muted">{esc(category)}</div>
-      <div class="item-row-qty">{fmt_num(item['quantity'])} <span class="muted">{esc(item['unit'])} nye</span>{f'<br><span class="muted">{esc(opened)}</span>' if opened else ''}</div>
+      <div class="item-row-qty">{fmt_num(item['quantity'])} <span class="muted">{stock_suffix}</span>{f'<br><span class="muted">{esc(opened)}</span>' if opened else ''}</div>
       <div class="item-row-actions">
-        <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn" title="Ta ut en">-1</button></form>
-        <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="1"><button class="btn" title="Legg til en">+1</button></form>
-        <form method="post" action="item/{item['id']}/open"><button class="btn" title="Flytt en fra nye til åpne">Åpne</button></form>
+        <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn" title="Reduser med én">−</button></form>
+        <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="1"><button class="btn primary" title="Øk med én">+</button></form>
+        {open_action}
       </div>
     </article>
     """
@@ -1246,29 +1526,40 @@ class Handler(BaseHTTPRequestHandler):
                 items_html = "".join(item_card(item) for item in items) or '<div class="card">Ingen varer passer filtrene.</div>'
                 items_html = f'<section class="grid">{items_html}</section>'
             body = f"""
-              <h1>Varer og ting</h1>
+              <h1>Mitt lager</h1>
               <form method="get" action="." class="toolbar">
                 <input type="hidden" name="view" value="{esc(view)}">
-                <div class="filters">
+                <div class="search-row">
                   <label>Søk
-                    <input name="q" value="{esc(search)}" placeholder="Navn, lurt sted, kategori, tag eller kode">
+                    <input name="q" value="{esc(search)}" placeholder="Søk etter vare, sted eller kode">
                   </label>
-                  <label>Plassering
-                    <select name="location">{option_list(locations, location, "Alle steder")}</select>
-                  </label>
-                  <label>Kategori
-                    <select name="category">{option_list(categories, category, "Alle kategorier")}</select>
-                  </label>
-                  <button class="btn primary">Filtrer</button>
-                  <a class="btn" href="{clear_url}">Nullstill</a>
+                  <button class="btn primary">Søk</button>
                 </div>
+                <details class="filter-panel" open>
+                  <summary>Filtre</summary>
+                  <div class="filters">
+                    <label>Plassering
+                      <select name="location">{option_list(locations, location, "Alle steder")}</select>
+                    </label>
+                    <label>Kategori
+                      <select name="category">{option_list(categories, category, "Alle kategorier")}</select>
+                    </label>
+                    <button class="btn primary">Bruk filtre</button>
+                    <a class="btn" href="{clear_url}">Nullstill</a>
+                  </div>
+                </details>
                 <div class="view-switch">
                   <a class="btn {"active" if view != "list" else ""}" href="{card_url}">Kort</a>
-                  <a class="btn {"active" if view == "list" else ""}" href="{list_url}">Kompakt</a>
-                  <a class="btn {"active" if low_only else ""}" href="{low_url}">Lav beholdning</a>
+                  <a class="btn {"active" if view == "list" else ""}" href="{list_url}">Liste</a>
+                  <a class="btn {"active" if low_only else ""}" href="{low_url}">Må kjøpes</a>
                 </div>
               </form>
               {items_html}
+              <script>
+                if (window.matchMedia("(max-width: 680px)").matches) {{
+                  document.querySelector(".filter-panel")?.removeAttribute("open");
+                }}
+              </script>
             """
             self.send_html("Varer", body)
             return
@@ -1306,28 +1597,57 @@ class Handler(BaseHTTPRequestHandler):
                 if not item:
                     self.send_html("Ikke funnet", "<h1>Ikke funnet</h1>", HTTPStatus.NOT_FOUND)
                     return
-                img = f'<img src="{esc(item["image_url"])}" alt="" style="max-width: 100%; border-radius: 8px; margin-bottom: 12px;">' if item["image_url"] else ""
+                img = f'<img class="item-hero" src="{esc(item["image_url"])}" alt="{esc(item["name"])}">' if item["image_url"] else ""
                 low = '<span class="pill low">Lav beholdning</span>' if item["is_low"] else ""
-                tag_text = item["tag_id"] or "Ingen NFC-tag koblet"
-                barcode_text = item["barcode"] or "Ingen strekkode/QR-kode lagret"
                 price_text = fmt_price(item["price"]) or "Ikke satt"
                 best_before_text = item["best_before"] or "Ikke satt"
+                is_consumable = item["kind"] == "consumable"
+                quantity_text = (
+                    f"{fmt_num(item['quantity'])} {esc(item['unit'])} på lager"
+                    if is_consumable
+                    else f"{fmt_num(item['quantity'])} {esc(item['unit'])}"
+                )
+                opened_text = (
+                    f'<p class="muted">{fmt_num(item["opened_quantity"])} {esc(item["unit"])} åpne</p>'
+                    if is_consumable
+                    else ""
+                )
+                stock_details = (
+                    f'<p class="muted">Pris: {esc(price_text)} · Holdbarhetsdato: {esc(best_before_text)}</p>'
+                    if is_consumable
+                    else ""
+                )
+                identifiers = "".join(
+                    filter(
+                        None,
+                        [
+                            f'<p class="muted">NFC: {esc(item["tag_id"])}</p>' if item["tag_id"] else "",
+                            f'<p class="muted">Kode: {esc(item["barcode"])}</p>' if item["barcode"] else "",
+                        ],
+                    )
+                )
+                consumable_actions = (
+                    f"""
+                      <form method="post" action="item/{item['id']}/open"><button class="btn">Åpne pakke</button></form>
+                      <form method="post" action="item/{item['id']}/adjust-opened"><input type="hidden" name="delta" value="-1"><button class="btn">Bruk åpen</button></form>
+                    """
+                    if is_consumable
+                    else ""
+                )
                 body = f"""
                   <div class="card">
                     {img}
                     <div class="item-title"><h1>{esc(item['name'])}</h1>{low}</div>
-                    <div class="qty">{fmt_num(item['quantity'])} <span class="muted">{esc(item['unit'])} nye</span></div>
-                    <p class="muted">{fmt_num(item['opened_quantity'])} {esc(item['unit'])} åpne</p>
+                    <div class="qty">{quantity_text}</div>
+                    {opened_text}
                     <p class="muted">{esc(item['category'])} {("· " + esc(item['location'])) if item['location'] else ""}</p>
-                    <p class="muted">Pris: {esc(price_text)} · Holdbarhetsdato: {esc(best_before_text)}</p>
-                    <p class="muted">NFC: {esc(tag_text)}</p>
-                    <p class="muted">Kode: {esc(barcode_text)}</p>
-                    <p>{esc(item['note'])}</p>
+                    {stock_details}
+                    {identifiers}
+                    {f"<p>{esc(item['note'])}</p>" if item['note'] else ""}
                     <div class="actions">
-                      <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn warn">-1</button></form>
+                      <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn">−1</button></form>
                       <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="1"><button class="btn primary">+1</button></form>
-                      <form method="post" action="item/{item['id']}/open"><button class="btn">Åpne pakke</button></form>
-                      <form method="post" action="item/{item['id']}/adjust-opened"><input type="hidden" name="delta" value="-1"><button class="btn">Bruk åpen</button></form>
+                      {consumable_actions}
                       <a class="btn" href="item/{item['id']}/edit">Rediger</a>
                     </div>
                   </div>
