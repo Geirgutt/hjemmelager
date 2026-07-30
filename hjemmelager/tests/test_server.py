@@ -241,20 +241,45 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertIn("Hva heter gjenstanden?", form)
         self.assertIn("For eksempel Slagdrill", form)
         self.assertIn("Lagre gjenstand", form)
-        self.assertIn('<option value="thing" selected>Ting</option>', form)
+        self.assertIn('type="hidden" name="kind" value="thing"', form)
+        self.assertNotIn("Skann strekkode", form)
+        self.assertIn('<details class="card form-section" hidden>', form)
+
+    def test_new_item_start_page_offers_three_clear_paths(self):
+        content = self.app.new_item_start_page()
+
+        self.assertIn("Skann en vare", content)
+        self.assertIn("Skriv inn en vare", content)
+        self.assertIn("Legg inn en gjenstand", content)
+        self.assertIn('href="scan"', content)
+        self.assertIn('href="new?kind=consumable"', content)
+        self.assertIn('href="new?kind=thing"', content)
+
+    def test_new_form_keeps_type_and_location_out_of_main_fields(self):
+        content = self.app.item_form(kind="consumable")
+
+        self.assertIn('type="hidden" name="kind" value="consumable"', content)
+        self.assertNotIn('<select name="kind" id="item-kind">', content)
+        self.assertEqual(content.count('<select name="location">'), 1)
+        self.assertIn("Legg til ny plassering", content)
+
+    def test_product_suggestion_explains_what_was_filled(self):
+        content = self.app.item_form(barcode="1234567890123")
+
+        self.assertIn('const filled = ["navn", "enhet", "kategori"]', content)
+        self.assertIn('filled.push("bilde")', content)
+        self.assertIn("Kontroller og lagre", content)
 
     def test_image_picker_does_not_force_camera(self):
         form = self.app.item_form()
 
         self.assertIn("Velg eller ta bilde", form)
+        self.assertIn("Valgfritt – velg fra telefonen eller bruk kameraet", form)
         self.assertNotIn('capture="environment"', form)
         self.assertIn('accept="image/*"', form)
         self.assertIn("Store bilder gjøres mindre automatisk", form)
 
     def test_new_item_can_continue_directly_to_nfc_linking(self):
-        form = self.app.item_form()
-        self.assertIn("Koble NFC-tag etter lagring", form)
-
         item = self.create_item("NFC etter lagring")
         redirect = self.app.new_item_redirect(
             item,
@@ -264,6 +289,18 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertEqual(redirect, f"item/{item['id']}/tag-link")
         session = self.app.get_tag_link_session(item["id"])
         self.assertEqual(session["status"], "waiting")
+
+    def test_new_item_redirects_to_clear_created_confirmation(self):
+        item = self.create_item("Ny bekreftelse")
+
+        redirect = self.app.new_item_redirect(item, {})
+        notice = self.app.created_item_notice(item)
+
+        self.assertEqual(redirect, f"item/{item['id']}?created=1")
+        self.assertIn("Varen er lagt til", notice)
+        self.assertIn("Koble NFC-tag", notice)
+        self.assertIn("Legg til detaljer", notice)
+        self.assertIn("Legg til en ny", notice)
 
     def test_multipart_image_is_saved_on_new_item(self):
         boundary = "hjemmelager-test-boundary"

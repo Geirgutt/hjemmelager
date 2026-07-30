@@ -28,22 +28,22 @@ Hjemmelager skal være en enkel og mobilvennlig Home Assistant-app som:
 - ✅ Vis om forbindelsen til Home Assistant er klar mens appen venter på NFC-tag.
 - ⬜ Test automatisk NFC-kobling på en fysisk Home Assistant-installasjon.
 
+### 0.6 – Raskere registrering
+
+- ✅ Lag et enda enklere førstebilde for **Ny vare** og **Ny gjenstand**.
+- ✅ La strekkodeskanning være den naturlige starten for forbruksvarer.
+- ✅ La NFC kobles på som et enkelt neste steg, uten synlig Tag-ID.
+- ✅ Foreslå navn, bilde, kategori, enhet og standardverdier automatisk.
+- ✅ Gjør avanserte felt tilgjengelige ved behov, men skjult som standard.
+- ✅ Gi en tydelig bekreftelse og naturlig neste handling etter lagring.
+
+## Neste
+
 ### Bedre organisering
 
 - ⬜ Gjør steder og kategorier enklere å opprette, endre og rydde.
 - ⬜ Gjør det tydelig hvordan varer flyttes mellom steder.
 - ⬜ Kontroller hele flyten på mobil før publisering.
-
-## Neste
-
-### 0.6 – Raskere registrering
-
-- ⬜ Lag et enda enklere førstebilde for **Ny vare** og **Ny gjenstand**.
-- ⬜ La strekkodeskanning være den naturlige starten for forbruksvarer.
-- ⬜ La NFC kobles på som et enkelt neste steg, uten synlig Tag-ID.
-- ⬜ Foreslå navn, bilde, kategori, enhet og standardverdier automatisk.
-- ⬜ Gjør avanserte felt tilgjengelige ved behov, men skjult som standard.
-- ⬜ Gi en tydelig bekreftelse og naturlig neste handling etter lagring.
 
 ### 0.7 – Bedre daglig bruk
 

@@ -64,6 +64,16 @@ Produktoppslaget er gratis og krever ingen konto, men Raspberry Pi-en må kunne 
 
 QR-koder som inneholder en Hjemmelager-vare-URL, for eksempel `/item/12`, åpner varen direkte.
 
+## Legg til vare eller gjenstand
+
+Trykk **Ny** og velg den korteste veien:
+
+1. **Skann en vare** henter navn, bilde, kategori og enhet fra strekkoden når produktet finnes.
+2. **Skriv inn en vare** krever bare navn og antall.
+3. **Legg inn en gjenstand** brukes for verktøy, utstyr og andre ting.
+
+Bilde, lagergrenser, plassering, kategori og tekniske koder ligger i valgfrie seksjoner. Etter lagring kan du koble NFC-tag, legge til flere detaljer eller registrere noe nytt.
+
 ### Feilsøking for strekkode-scanning
 
 Scan-siden viser diagnostikk for sikker tilkobling, kameratilgang, ZXing-biblioteket, antall kameraenheter og valgt kamera. Bruk disse punktene hvis kameraet ikke starter:

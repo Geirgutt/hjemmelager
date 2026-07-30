@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0 - Trygg oversikt
+
+- Gjorde **Ny** til en kort veiviser med egne valg for strekkode, manuell vare og gjenstand.
+- Reduserte førsteregistreringen til navn og antall, med bilde og øvrige felt som valgfrie seksjoner.
+- Gjorde strekkode til den naturlige starten og forklarer hvilke produktdata som fylles inn automatisk.
+- La inn tydelig bekreftelse etter lagring med neste steg for NFC, detaljer eller en ny registrering.
+- Skjulte Tag-ID og irrelevante matvarefelt fra den normale gjenstands- og NFC-flyten.
+- Utvidet testpakken til 28 tester for registrering, forslag, NFC, bilder, backup og daglig bruk.
+
 ## 0.5.2 - Trygg oversikt
 
 - Viser nå tydelig om NFC-forbindelsen til Home Assistant er klar, kobler til eller prøver igjen.

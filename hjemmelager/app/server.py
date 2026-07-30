@@ -22,7 +22,7 @@ except ImportError:
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "0.5.2"
+APP_VERSION = "0.6.0"
 APP_CODENAME = "Trygg oversikt"
 TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
@@ -880,7 +880,25 @@ def new_item_redirect(item, data):
     ):
         start_tag_link(item["id"])
         return f"item/{item['id']}/tag-link"
-    return f"item/{item['id']}"
+    return f"item/{item['id']}?created=1"
+
+
+def created_item_notice(item):
+    noun = "Gjenstanden" if item["kind"] == "thing" else "Varen"
+    return f"""
+      <section class="created-notice">
+        <span class="created-check" aria-hidden="true">✓</span>
+        <h2>{noun} er lagt til</h2>
+        <p class="muted">Hva vil du gjøre videre?</p>
+        <div class="actions">
+          <form method="post" action="item/{item['id']}/tag-link/start">
+            <button class="btn primary">Koble NFC-tag</button>
+          </form>
+          <a class="btn" href="item/{item['id']}/edit">Legg til detaljer</a>
+          <a class="btn" href="new">Legg til en ny</a>
+        </div>
+      </section>
+    """
 
 
 def update_item(item_id, data):
@@ -1658,6 +1676,42 @@ def page(title, body, base_path=""):
     .empty-choice strong {{
       color: var(--accent);
     }}
+    .new-start {{
+      max-width: 620px;
+      margin-inline: auto;
+    }}
+    .new-start .empty-state-choices {{
+      grid-template-columns: 1fr;
+    }}
+    .new-start .empty-choice {{
+      grid-template-columns: 42px minmax(0, 1fr);
+      align-items: center;
+      gap: 10px;
+      padding: 11px;
+    }}
+    .new-choice-icon {{
+      display: grid;
+      place-items: center;
+      width: 42px;
+      height: 42px;
+      border-radius: 11px;
+      color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+    }}
+    .new-choice-icon svg {{
+      width: 22px;
+      height: 22px;
+      fill: none;
+      stroke: currentColor;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-width: 2;
+    }}
+    .new-choice-copy {{
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+    }}
     .item-card {{
       position: relative;
       display: grid;
@@ -2057,6 +2111,28 @@ def page(title, body, base_path=""):
     .nfc-next-step input {{
       width: auto;
       margin-right: 5px;
+    }}
+    .created-notice {{
+      display: grid;
+      gap: 8px;
+      margin-bottom: 10px;
+      padding: 11px;
+      border: 1px solid color-mix(in srgb, var(--positive) 36%, var(--line));
+      border-radius: 12px;
+      background: color-mix(in srgb, var(--positive) 8%, var(--panel));
+    }}
+    .created-notice h2, .created-notice p {{
+      margin: 0;
+    }}
+    .created-check {{
+      display: inline-grid;
+      place-items: center;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      color: var(--panel);
+      background: var(--positive);
+      font-weight: 800;
     }}
     .field-label {{
       font-weight: 650;
@@ -2802,6 +2878,47 @@ def inventory_empty_state(kind_view, filtered=False, clear_url="."):
     """
 
 
+def new_item_start_page():
+    return """
+      <section class="empty-state new-start">
+        <span class="empty-state-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"></path></svg>
+        </span>
+        <h1>Hva vil du legge til?</h1>
+        <p class="muted">Velg den raskeste veien. Du kan fylle inn flere detaljer senere.</p>
+        <div class="empty-state-choices">
+          <a class="empty-choice" href="scan">
+            <span class="new-choice-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4"></path><path d="M8 9v6M11 9v6M14 9v6M17 9v6"></path></svg>
+            </span>
+            <span class="new-choice-copy">
+              <strong>Skann en vare</strong>
+              <span class="muted">Hent navn og bilde fra strekkoden</span>
+            </span>
+          </a>
+          <a class="empty-choice" href="new?kind=consumable">
+            <span class="new-choice-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M5 7h14v12H5zM8 4h8v3M8 11h8M8 15h5"></path></svg>
+            </span>
+            <span class="new-choice-copy">
+              <strong>Skriv inn en vare</strong>
+              <span class="muted">Mat, husholdning og andre forbruksvarer</span>
+            </span>
+          </a>
+          <a class="empty-choice" href="new?kind=thing">
+            <span class="new-choice-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M14.5 6.5 17.5 3.5l3 3-3 3"></path><path d="m16 8-8.5 8.5a2.1 2.1 0 0 1-3-3L13 5"></path></svg>
+            </span>
+            <span class="new-choice-copy">
+              <strong>Legg inn en gjenstand</strong>
+              <span class="muted">Verktøy, utstyr og ting du vil finne igjen</span>
+            </span>
+          </a>
+        </div>
+      </section>
+    """
+
+
 def item_form(item=None, tag_id="", barcode="", kind="consumable"):
     is_new = item is None
     kind = kind if kind in ("consumable", "thing") else "consumable"
@@ -2836,7 +2953,7 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
     categories = distinct_values("category")
     locations = distinct_values("location")
     barcode_step = ""
-    if is_new:
+    if is_new and not is_thing:
         if item["barcode"]:
             barcode_step = f"""
               <div class="full barcode-step" id="barcode-step">
@@ -2869,62 +2986,88 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
           <span><input type="checkbox" name="remove_image" value="1"> Fjern bilde</span>
         </label>
     """ if item["image_url"] else ""
-    nfc_next_step = """
-      <div class="full nfc-next-step">
-        <label>
-          <span>
-            <input type="checkbox" name="link_nfc_after_save" value="1">
-            Koble NFC-tag etter lagring
+    image_section = f"""
+      <details class="card form-section">
+        <summary>
+          <span class="form-section-summary">
+            Bilde
+            <small>Valgfritt – velg fra telefonen eller bruk kameraet</small>
           </span>
-        </label>
-        <span class="field-help">Når varen er lagret, åpnes en enkel ventemodus. Skann deretter NFC-klistremerket med Home Assistant-appen.</span>
-      </div>
-    """ if is_new else ""
-    return f"""
-    <form class="stack" method="post" action="{action}" enctype="multipart/form-data">
-      <section class="card form-card">
-        <h2>Det viktigste</h2>
-        <p class="muted">Du kan lagre {noun} etter bare navn og antall.</p>
-        <div class="form-grid">
-          {barcode_step}
-          <label class="full">Hva heter {noun}?
-            <input id="item-name" name="name" value="{esc(item['name'])}" placeholder="{example}" required autofocus>
-          </label>
-          <label>Antall
-            <input name="quantity" type="number" step="0.01" value="{fmt_num(item['quantity'])}" inputmode="decimal">
-          </label>
+        </summary>
+        <div class="form-section-content">
+          <div class="form-grid">
+            <div class="full field-group">
+              <label class="file-picker" for="item-image-file">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h3l1.5-2h7L17 7h3v12H4z"/><circle cx="12" cy="13" r="3"/></svg>
+                Velg eller ta bilde
+              </label>
+              <input class="sr-only" id="item-image-file" name="image_file" type="file" accept="image/*">
+              <input id="item-image-data" name="image_file_data_url" type="hidden">
+              <div class="item-image-preview" id="item-image-preview" {preview_hidden}>
+                <img id="item-image-preview-img" src="{esc(preview_src)}" alt="">
+                <div>
+                  <strong id="item-image-preview-title">{"Nåværende bilde" if preview_src else "Bilde valgt"}</strong>
+                  <span class="field-help" id="item-image-preview-status">{"Velg et nytt bilde for å bytte." if preview_src else ""}</span>
+                </div>
+              </div>
+              <span class="field-help">Store bilder gjøres mindre automatisk.</span>
+            </div>
+            {remove_image}
+          </div>
+        </div>
+      </details>
+    """
+    kind_field = (
+        f'<input type="hidden" name="kind" value="{esc(item["kind"])}">'
+        if is_new
+        else f"""
           <label>Type
             <select name="kind" id="item-kind">
               <option value="consumable" {"selected" if item['kind'] == 'consumable' else ""}>Forbruk</option>
               <option value="thing" {"selected" if item['kind'] == 'thing' else ""}>Ting</option>
             </select>
           </label>
+        """
+    )
+    location_field = (
+        ""
+        if is_new
+        else f"""
           <label class="full">Plassering
             <select name="location">{option_list(locations, item["location"], "Velg senere")}</select>
           </label>
-          <div class="full field-group">
-            <span class="field-label">Bilde</span>
-            <label class="file-picker" for="item-image-file">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h3l1.5-2h7L17 7h3v12H4z"/><circle cx="12" cy="13" r="3"/></svg>
-              Velg eller ta bilde
-            </label>
-            <input class="sr-only" id="item-image-file" name="image_file" type="file" accept="image/*">
-            <input id="item-image-data" name="image_file_data_url" type="hidden">
-            <div class="item-image-preview" id="item-image-preview" {preview_hidden}>
-              <img id="item-image-preview-img" src="{esc(preview_src)}" alt="">
-              <div>
-                <strong id="item-image-preview-title">{"Nåværende bilde" if preview_src else "Bilde valgt"}</strong>
-                <span class="field-help" id="item-image-preview-status">{"Velg et nytt bilde for å bytte." if preview_src else ""}</span>
-              </div>
-            </div>
-            <span class="field-help">Telefonen lar deg velge fra bildebiblioteket eller åpne kameraet. Store bilder gjøres mindre automatisk.</span>
-          </div>
-          {remove_image}
-          {nfc_next_step}
+        """
+    )
+    advanced_location_field = (
+        f"""
+          <label class="full">Plassering
+            <select name="location">{option_list(locations, item["location"], "Velg senere")}</select>
+          </label>
+        """
+        if is_new
+        else ""
+    )
+    return f"""
+    <form class="stack" method="post" action="{action}" enctype="multipart/form-data">
+      <section class="card form-card">
+        <h2>Det viktigste</h2>
+        <p class="muted">Navn er nok. Alt annet kan legges til senere.</p>
+        <div class="form-grid">
+          {barcode_step}
+          {kind_field}
+          <label class="full">Hva heter {noun}?
+            <input id="item-name" name="name" value="{esc(item['name'])}" placeholder="{example}" required autofocus>
+          </label>
+          <label>Antall
+            <input name="quantity" type="number" step="0.01" value="{fmt_num(item['quantity'])}" inputmode="decimal">
+          </label>
+          {location_field}
         </div>
       </section>
 
-      <details class="card form-section">
+      {image_section}
+
+      <details class="card form-section" {"hidden" if is_thing else ""}>
         <summary>
           <span class="form-section-summary">
             Lager og handleliste
@@ -2971,6 +3114,7 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
         </summary>
         <div class="form-section-content">
           <div class="form-grid">
+            {advanced_location_field}
             <label class="full">Legg til ny plassering
               <input name="new_location" placeholder="For eksempel Kjøkken › Skap">
             </label>
@@ -3135,8 +3279,12 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
           }}
 
           title.textContent = product.name;
-          detail.textContent = [product.brand, product.package_size].filter(Boolean).join(" · ")
-            || "Produktinformasjon funnet";
+          const productFacts = [product.brand, product.package_size].filter(Boolean).join(" · ");
+          const filled = ["navn", "enhet", "kategori"];
+          if (product.image_data) filled.push("bilde");
+          detail.textContent =
+            (productFacts ? productFacts + ". " : "") +
+            "Vi fylte inn " + filled.join(", ") + ". Kontroller og lagre.";
           source.innerHTML =
             'Produktdata fra <a href="' + product.source_url +
             '" target="_blank" rel="noopener">Open Food Facts</a>';
@@ -3915,6 +4063,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "new":
             query = parse_qs(urlparse(self.path).query)
+            if not query:
+                self.send_html("Legg til", new_item_start_page())
+                return
             tag_id = (query.get("tag_id") or [""])[0]
             barcode = (query.get("barcode") or [""])[0]
             kind = (query.get("kind") or ["consumable"])[0]
@@ -4011,7 +4162,14 @@ class Handler(BaseHTTPRequestHandler):
                     if is_consumable
                     else ""
                 )
+                query = parse_qs(urlparse(self.path).query)
+                created_notice = (
+                    created_item_notice(item)
+                    if (query.get("created") or ["0"])[0] == "1"
+                    else ""
+                )
                 body = f"""
+                  {created_notice}
                   <div class="card item-detail-card">
                     {img}
                     <div class="item-title"><h1>{esc(item['name'])}</h1>{badges}</div>
