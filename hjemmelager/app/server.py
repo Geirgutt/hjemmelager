@@ -22,7 +22,7 @@ except ImportError:
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "0.5.1"
+APP_VERSION = "0.5.2"
 APP_CODENAME = "Trygg oversikt"
 TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
@@ -77,10 +77,28 @@ HOME_ASSISTANT_WEBSOCKET_URL = os.environ.get(
     "HOME_ASSISTANT_WEBSOCKET_URL",
     "ws://supervisor/core/websocket",
 )
+HOME_ASSISTANT_NFC_LOCK = threading.Lock()
+HOME_ASSISTANT_NFC_STATE = {
+    "status": "starting",
+    "message": "Kobler til Home Assistant …",
+    "updated_at": 0,
+}
 
 
 def now():
     return int(time.time())
+
+
+def set_home_assistant_nfc_state(status, message):
+    with HOME_ASSISTANT_NFC_LOCK:
+        HOME_ASSISTANT_NFC_STATE.update(
+            {"status": status, "message": message, "updated_at": now()}
+        )
+
+
+def get_home_assistant_nfc_state():
+    with HOME_ASSISTANT_NFC_LOCK:
+        return dict(HOME_ASSISTANT_NFC_STATE)
 
 
 def handle_home_assistant_event(message):
@@ -103,12 +121,20 @@ def handle_home_assistant_event(message):
 def home_assistant_event_listener():
     token = os.environ.get("SUPERVISOR_TOKEN", "").strip()
     if not token:
+        set_home_assistant_nfc_state(
+            "preview",
+            "Automatisk NFC testes i Home Assistant etter oppdatering.",
+        )
         print(
             "Home Assistant NFC-lytter er ikke aktiv i lokal forhåndsvisning.",
             flush=True,
         )
         return
     if websocket is None:
+        set_home_assistant_nfc_state(
+            "error",
+            "NFC-tilkoblingen kunne ikke startes.",
+        )
         print(
             "Home Assistant NFC-lytter mangler WebSocket-biblioteket.",
             flush=True,
@@ -119,6 +145,10 @@ def home_assistant_event_listener():
     while True:
         connection = None
         try:
+            set_home_assistant_nfc_state(
+                "connecting",
+                "Kobler til Home Assistant …",
+            )
             connection = websocket.create_connection(
                 HOME_ASSISTANT_WEBSOCKET_URL,
                 timeout=65,
@@ -146,6 +176,10 @@ def home_assistant_event_listener():
                 "Home Assistant NFC-lytter er tilkoblet og klar.",
                 flush=True,
             )
+            set_home_assistant_nfc_state(
+                "connected",
+                "Klar til å motta NFC-skanningen.",
+            )
             retry_seconds = 2
 
             while True:
@@ -158,6 +192,10 @@ def home_assistant_event_listener():
                     raise RuntimeError("tilkoblingen ble lukket")
                 handle_home_assistant_event(json.loads(raw_message))
         except Exception as exc:
+            set_home_assistant_nfc_state(
+                "retrying",
+                "Mistet forbindelsen til Home Assistant. Prøver igjen automatisk …",
+            )
             print(
                 f"Home Assistant NFC-lytter kobler til på nytt: {exc}",
                 flush=True,
@@ -2169,6 +2207,44 @@ def page(title, body, base_path=""):
     .tag-link-status {{
       min-height: 2.7em;
     }}
+    .nfc-connection {{
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      width: fit-content;
+      max-width: 100%;
+      padding: 6px 9px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: color-mix(in srgb, var(--line) 16%, var(--panel));
+      font-size: .82rem;
+      line-height: 1.2;
+    }}
+    .nfc-connection::before {{
+      content: "";
+      flex: 0 0 auto;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--muted);
+    }}
+    .nfc-connection[data-state="connected"] {{
+      color: var(--positive);
+      border-color: color-mix(in srgb, var(--positive) 35%, var(--line));
+      background: color-mix(in srgb, var(--positive) 8%, var(--panel));
+    }}
+    .nfc-connection[data-state="connected"]::before {{
+      background: var(--positive);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--positive) 16%, transparent);
+    }}
+    .nfc-connection[data-state="error"] {{
+      color: var(--danger);
+      border-color: color-mix(in srgb, var(--danger) 35%, var(--line));
+    }}
+    .nfc-connection[data-state="error"]::before {{
+      background: var(--danger);
+    }}
     .tag-link-card .actions {{
       justify-content: center;
       margin-top: 2px;
@@ -3075,6 +3151,7 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
 
 
 def tag_link_page(item, session):
+    nfc_connection = get_home_assistant_nfc_state()
     status = session["status"] if session else "cancelled"
     messages = {
         "waiting": f'Åpne Home Assistant-appen og skann klistremerket du vil bruke på «{item["name"]}».',
@@ -3124,6 +3201,9 @@ def tag_link_page(item, session):
         </div>
         <h1 id="tag-link-title">{"Venter på NFC-tag" if waiting else "Koble NFC-tag"}</h1>
         <p class="tag-link-status" id="tag-link-message">{esc(status_text)}</p>
+        <div class="nfc-connection" id="nfc-connection" data-state="{esc(nfc_connection["status"])}">
+          {esc(nfc_connection["message"])}
+        </div>
         <p class="muted" id="tag-link-countdown-wrap">{countdown}</p>
         <div class="actions" id="tag-link-actions">
           {cancel}
@@ -3139,8 +3219,13 @@ def tag_link_page(item, session):
         const countdownWrap = document.getElementById("tag-link-countdown-wrap");
         const actions = document.getElementById("tag-link-actions");
         const icon = document.getElementById("tag-link-icon");
+        const nfcConnection = document.getElementById("nfc-connection");
 
         function showResult(data) {{
+          if (data.home_assistant && nfcConnection) {{
+            nfcConnection.dataset.state = data.home_assistant.status || "connecting";
+            nfcConnection.textContent = data.home_assistant.message || "Kobler til Home Assistant …";
+          }}
           if (data.status === "waiting") {{
             const seconds = Math.max(0, Number(data.seconds_left || 0));
             countdownWrap.textContent = seconds + " sekunder igjen";
@@ -4014,9 +4099,11 @@ class Handler(BaseHTTPRequestHandler):
                         "status": "cancelled",
                         "message": "Ingen aktiv tag-kobling.",
                         "seconds_left": 0,
+                        "home_assistant": get_home_assistant_nfc_state(),
                     }
                 )
                 return
+            session["home_assistant"] = get_home_assistant_nfc_state()
             self.send_json(session)
             return
 

@@ -2,4 +2,5 @@
 
 En enkel Home Assistant add-on for hjemme-inventar: varer, duppedingser, lokasjoner og NFC-tags.
 
-Dokumentasjonen ligger i [DOCS.md](DOCS.md).
+Planen videre ligger i [../ROADMAP.md](../ROADMAP.md), og dokumentasjonen ligger
+i [DOCS.md](DOCS.md).

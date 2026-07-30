@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.2 - Trygg oversikt
+
+- Viser nå tydelig om NFC-forbindelsen til Home Assistant er klar, kobler til eller prøver igjen.
+- Gjør det enklere å skille en manglende NFC-skanning fra et tilkoblingsproblem.
+- La inn en levende roadmap for det videre arbeidet frem mot 1.0.
+
 ## 0.5.1 - Trygg oversikt
 
 - Koblede Hjemmelager direkte til Home Assistants NFC-hendelser, uten manuell IP-adresse, REST-kommando eller automasjon.

@@ -410,6 +410,19 @@ class HjemmelagerTests(unittest.TestCase):
 
         self.assertIsNone(result)
 
+    def test_home_assistant_nfc_state_is_visible_on_link_page(self):
+        item = self.create_item("Statusvare")
+        session = self.app.start_tag_link(item["id"])
+        self.app.set_home_assistant_nfc_state(
+            "connected",
+            "Klar til å motta NFC-skanningen.",
+        )
+
+        content = self.app.tag_link_page(item, session)
+
+        self.assertIn('data-state="connected"', content)
+        self.assertIn("Klar til å motta NFC-skanningen.", content)
+
 
 if __name__ == "__main__":
     unittest.main()

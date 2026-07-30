@@ -1,5 +1,5 @@
 name: Hjemmelager
-version: "0.5.1"
+version: "0.5.2"
 slug: hjemmelager
 description: Enkel hjemme-inventar med NFC/tag-flyt, lagerstatus og lav beholdning. Kodenavn Trygg oversikt.
 url: https://github.com/Geirgutt/tr-kker/tree/main/hjemmelager
