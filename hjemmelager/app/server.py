@@ -4,6 +4,7 @@ import html
 import json
 import os
 import sqlite3
+import threading
 import time
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
@@ -14,9 +15,14 @@ from urllib.parse import urlencode, parse_qs, unquote, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+try:
+    import websocket
+except ImportError:
+    websocket = None
+
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.5.1"
 APP_CODENAME = "Trygg oversikt"
 TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
@@ -24,7 +30,8 @@ DB_PATH = DATA_DIR / "hjemmelager.db"
 APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = APP_DIR / "static"
 PORT = int(os.environ.get("HJEMMELAGER_PORT", "8099"))
-MAX_IMAGE_UPLOAD_BYTES = 1_500_000
+MAX_IMAGE_UPLOAD_BYTES = 8_000_000
+MAX_STORED_IMAGE_BYTES = 2_000_000
 MAX_BACKUP_UPLOAD_BYTES = 25_000_000
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 OPEN_FOOD_FACTS_BASE_URL = "https://world.openfoodfacts.org"
@@ -66,10 +73,113 @@ BACKUP_EVENT_COLUMNS = (
     "note",
     "created_at",
 )
+HOME_ASSISTANT_WEBSOCKET_URL = os.environ.get(
+    "HOME_ASSISTANT_WEBSOCKET_URL",
+    "ws://supervisor/core/websocket",
+)
 
 
 def now():
     return int(time.time())
+
+
+def handle_home_assistant_event(message):
+    if message.get("type") != "event":
+        return None
+    event = message.get("event") or {}
+    if event.get("event_type") != "tag_scanned":
+        return None
+    tag_id = str((event.get("data") or {}).get("tag_id") or "").strip()
+    if not tag_id:
+        return None
+    result = touch_tag(tag_id)
+    print(
+        f"Home Assistant NFC: mottok tagg {tag_id!r}, resultat {result['status']}.",
+        flush=True,
+    )
+    return result
+
+
+def home_assistant_event_listener():
+    token = os.environ.get("SUPERVISOR_TOKEN", "").strip()
+    if not token:
+        print(
+            "Home Assistant NFC-lytter er ikke aktiv i lokal forhåndsvisning.",
+            flush=True,
+        )
+        return
+    if websocket is None:
+        print(
+            "Home Assistant NFC-lytter mangler WebSocket-biblioteket.",
+            flush=True,
+        )
+        return
+
+    retry_seconds = 2
+    while True:
+        connection = None
+        try:
+            connection = websocket.create_connection(
+                HOME_ASSISTANT_WEBSOCKET_URL,
+                timeout=65,
+            )
+            auth_message = json.loads(connection.recv())
+            if auth_message.get("type") != "auth_required":
+                raise RuntimeError("uventet svar før autentisering")
+            connection.send(json.dumps({"type": "auth", "access_token": token}))
+            auth_result = json.loads(connection.recv())
+            if auth_result.get("type") != "auth_ok":
+                raise RuntimeError("Home Assistant avviste tilkoblingen")
+            connection.send(
+                json.dumps(
+                    {
+                        "id": 1,
+                        "type": "subscribe_events",
+                        "event_type": "tag_scanned",
+                    }
+                )
+            )
+            subscription = json.loads(connection.recv())
+            if not subscription.get("success"):
+                raise RuntimeError("kunne ikke abonnere på tag_scanned")
+            print(
+                "Home Assistant NFC-lytter er tilkoblet og klar.",
+                flush=True,
+            )
+            retry_seconds = 2
+
+            while True:
+                try:
+                    raw_message = connection.recv()
+                except websocket.WebSocketTimeoutException:
+                    connection.ping()
+                    continue
+                if not raw_message:
+                    raise RuntimeError("tilkoblingen ble lukket")
+                handle_home_assistant_event(json.loads(raw_message))
+        except Exception as exc:
+            print(
+                f"Home Assistant NFC-lytter kobler til på nytt: {exc}",
+                flush=True,
+            )
+            time.sleep(retry_seconds)
+            retry_seconds = min(retry_seconds * 2, 30)
+        finally:
+            if connection is not None:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+
+
+def start_home_assistant_event_listener():
+    listener = threading.Thread(
+        target=home_assistant_event_listener,
+        name="home-assistant-nfc",
+        daemon=True,
+    )
+    listener.start()
+    return listener
 
 
 @contextmanager
@@ -591,7 +701,17 @@ def image_value(data, existing=""):
     if data.get("remove_image"):
         return ""
     if data.get("image_file_data_url"):
-        return data["image_file_data_url"]
+        value = data["image_file_data_url"]
+        prefix, separator, encoded = value.partition(",")
+        allowed_prefixes = tuple(
+            f"data:{content_type};base64" for content_type in ALLOWED_IMAGE_TYPES
+        )
+        if not separator or not prefix.lower().startswith(allowed_prefixes):
+            raise ValueError("Bildet har et format som ikke støttes")
+        estimated_size = len(encoded) * 3 // 4
+        if estimated_size > MAX_STORED_IMAGE_BYTES:
+            raise ValueError("Bildet er fortsatt for stort etter behandling. Velg et mindre bilde")
+        return value
     return (data.get("image_url") or existing or "").strip()
 
 
@@ -651,7 +771,7 @@ def parse_multipart_form(raw, content_type):
             if content_type not in ALLOWED_IMAGE_TYPES:
                 raise ValueError("Bildet må være JPEG, PNG, WebP eller GIF")
             if len(content) > MAX_IMAGE_UPLOAD_BYTES:
-                raise ValueError("Bildet er for stort. Maks 1,5 MB")
+                raise ValueError("Bildet er for stort. Maks 8 MB")
             data[f"{name}_data_url"] = f"data:{content_type};base64,{base64.b64encode(content).decode('ascii')}"
         else:
             data[name] = content.decode("utf-8", "replace")
@@ -711,6 +831,18 @@ def create_item(data):
         item_id = cur.lastrowid
         save_event(conn, item_id, "created", None, quantity)
     return get_item(item_id)
+
+
+def new_item_redirect(item, data):
+    if str(data.get("link_nfc_after_save", "0")).lower() in (
+        "1",
+        "true",
+        "on",
+        "yes",
+    ):
+        start_tag_link(item["id"])
+        return f"item/{item['id']}/tag-link"
+    return f"item/{item['id']}"
 
 
 def update_item(item_id, data):
@@ -1873,6 +2005,21 @@ def page(title, body, base_path=""):
       display: grid;
       gap: 6px;
     }}
+    .nfc-next-step {{
+      display: grid;
+      gap: 3px;
+      padding: 10px;
+      border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
+      border-radius: 10px;
+      background: color-mix(in srgb, var(--accent) 5%, var(--panel));
+    }}
+    .nfc-next-step label {{
+      display: block;
+    }}
+    .nfc-next-step input {{
+      width: auto;
+      margin-right: 5px;
+    }}
     .field-label {{
       font-weight: 650;
     }}
@@ -1897,6 +2044,30 @@ def page(title, body, base_path=""):
       stroke-linecap: round;
       stroke-linejoin: round;
       stroke-width: 2;
+    }}
+    .item-image-preview {{
+      display: grid;
+      grid-template-columns: 54px minmax(0, 1fr);
+      gap: 9px;
+      align-items: center;
+      padding: 7px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: color-mix(in srgb, var(--line) 18%, var(--panel));
+    }}
+    .item-image-preview[hidden] {{
+      display: none;
+    }}
+    .item-image-preview img {{
+      width: 54px;
+      height: 54px;
+      padding: 3px;
+      border-radius: 8px;
+      object-fit: contain;
+      background: white;
+    }}
+    .item-image-preview strong, .item-image-preview span {{
+      display: block;
     }}
     .barcode-step {{
       display: grid;
@@ -2584,6 +2755,8 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
     action = f"item/{item['id']}/edit" if item["id"] else "new"
     checked = "checked" if item["shopping_enabled"] else ""
     image_url = "" if str(item["image_url"]).startswith("data:") else item["image_url"]
+    preview_src = item["image_url"] or ""
+    preview_hidden = "" if preview_src else "hidden"
     categories = distinct_values("category")
     locations = distinct_values("location")
     barcode_step = ""
@@ -2620,6 +2793,17 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
           <span><input type="checkbox" name="remove_image" value="1"> Fjern bilde</span>
         </label>
     """ if item["image_url"] else ""
+    nfc_next_step = """
+      <div class="full nfc-next-step">
+        <label>
+          <span>
+            <input type="checkbox" name="link_nfc_after_save" value="1">
+            Koble NFC-tag etter lagring
+          </span>
+        </label>
+        <span class="field-help">Når varen er lagret, åpnes en enkel ventemodus. Skann deretter NFC-klistremerket med Home Assistant-appen.</span>
+      </div>
+    """ if is_new else ""
     return f"""
     <form class="stack" method="post" action="{action}" enctype="multipart/form-data">
       <section class="card form-card">
@@ -2646,12 +2830,21 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
             <span class="field-label">Bilde</span>
             <label class="file-picker" for="item-image-file">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h3l1.5-2h7L17 7h3v12H4z"/><circle cx="12" cy="13" r="3"/></svg>
-              Ta eller velg bilde
+              Velg eller ta bilde
             </label>
-            <input class="sr-only" id="item-image-file" name="image_file" type="file" accept="image/jpeg,image/png,image/webp,image/gif" capture="environment">
-            <span class="field-help">Ta et bilde eller velg et du allerede har.</span>
+            <input class="sr-only" id="item-image-file" name="image_file" type="file" accept="image/*">
+            <input id="item-image-data" name="image_file_data_url" type="hidden">
+            <div class="item-image-preview" id="item-image-preview" {preview_hidden}>
+              <img id="item-image-preview-img" src="{esc(preview_src)}" alt="">
+              <div>
+                <strong id="item-image-preview-title">{"Nåværende bilde" if preview_src else "Bilde valgt"}</strong>
+                <span class="field-help" id="item-image-preview-status">{"Velg et nytt bilde for å bytte." if preview_src else ""}</span>
+              </div>
+            </div>
+            <span class="field-help">Telefonen lar deg velge fra bildebiblioteket eller åpne kameraet. Store bilder gjøres mindre automatisk.</span>
           </div>
           {remove_image}
+          {nfc_next_step}
         </div>
       </section>
 
@@ -2769,6 +2962,53 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
       }}
       kindSelect?.addEventListener("change", updateBarcodeStep);
       updateBarcodeStep();
+
+      const imageInput = document.getElementById("item-image-file");
+      const imageDataInput = document.getElementById("item-image-data");
+      const imagePreview = document.getElementById("item-image-preview");
+      const imagePreviewImg = document.getElementById("item-image-preview-img");
+      const imagePreviewTitle = document.getElementById("item-image-preview-title");
+      const imagePreviewStatus = document.getElementById("item-image-preview-status");
+      imageInput?.addEventListener("change", async () => {{
+        const file = imageInput.files?.[0];
+        if (!file) return;
+        imagePreview.hidden = false;
+        imagePreviewTitle.textContent = file.name || "Bilde valgt";
+        imagePreviewStatus.textContent = "Klargjør bilde …";
+        const objectUrl = URL.createObjectURL(file);
+        imagePreviewImg.src = objectUrl;
+        try {{
+          const source = new Image();
+          await new Promise((resolve, reject) => {{
+            source.onload = resolve;
+            source.onerror = reject;
+            source.src = objectUrl;
+          }});
+          const maxSide = 1400;
+          const scale = Math.min(1, maxSide / Math.max(source.naturalWidth, source.naturalHeight));
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.round(source.naturalWidth * scale));
+          canvas.height = Math.max(1, Math.round(source.naturalHeight * scale));
+          const context = canvas.getContext("2d");
+          context.fillStyle = "#fff";
+          context.fillRect(0, 0, canvas.width, canvas.height);
+          context.drawImage(source, 0, 0, canvas.width, canvas.height);
+          let dataUrl = canvas.toDataURL("image/jpeg", .82);
+          if (dataUrl.length > 2400000) {{
+            dataUrl = canvas.toDataURL("image/jpeg", .62);
+          }}
+          imageDataInput.value = dataUrl;
+          imagePreviewImg.src = dataUrl;
+          imageInput.value = "";
+          const sizeKb = Math.round((dataUrl.length * 3 / 4) / 1024);
+          imagePreviewStatus.textContent = `Bilde klart · ca. ${{sizeKb}} kB`;
+        }} catch (error) {{
+          imageDataInput.value = "";
+          imagePreviewStatus.textContent = "Originalbildet sendes. Store bilder kan bli avvist.";
+        }} finally {{
+          URL.revokeObjectURL(objectUrl);
+        }}
+      }});
 
       const lookupBarcode = {json.dumps(item["barcode"] if is_new else "")};
       const suggestion = document.getElementById("product-suggestion");
@@ -3816,6 +4056,21 @@ class Handler(BaseHTTPRequestHandler):
                     HTTPStatus.BAD_REQUEST,
                 )
                 return
+            if path == "new" or (
+                path.startswith("item/") and path.endswith("/edit")
+            ):
+                self.send_html(
+                    "Kunne ikke lagre bildet",
+                    f"""
+                      <div class="card">
+                        <h1>Bildet kunne ikke lagres</h1>
+                        <p>{esc(exc)}</p>
+                        <button class="btn primary" onclick="history.back()">Gå tilbake</button>
+                      </div>
+                    """,
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
             self.send_json({"error": f"Invalid body: {exc}"}, HTTPStatus.BAD_REQUEST)
             return
 
@@ -3871,10 +4126,23 @@ class Handler(BaseHTTPRequestHandler):
         if path == "new":
             try:
                 item = create_item(data)
+            except ValueError as exc:
+                self.send_html(
+                    "Kunne ikke lagre bildet",
+                    f"""
+                      <div class="card">
+                        <h1>Bildet kunne ikke lagres</h1>
+                        <p>{esc(exc)}</p>
+                        <button class="btn primary" onclick="history.back()">Gå tilbake</button>
+                      </div>
+                    """,
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
             except sqlite3.IntegrityError:
                 self.send_html("Tag finnes", "<h1>Tag-id er allerede i bruk</h1>", HTTPStatus.CONFLICT)
                 return
-            self.redirect(f"item/{item['id']}")
+            self.redirect(new_item_redirect(item, data))
             return
 
         if path == "organize":
@@ -3956,6 +4224,19 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 3 and parts[2] == "edit" and parts[1].isdigit():
                 try:
                     item = update_item(int(parts[1]), data)
+                except ValueError as exc:
+                    self.send_html(
+                        "Kunne ikke lagre bildet",
+                        f"""
+                          <div class="card">
+                            <h1>Bildet kunne ikke lagres</h1>
+                            <p>{esc(exc)}</p>
+                            <button class="btn primary" onclick="history.back()">Gå tilbake</button>
+                          </div>
+                        """,
+                        HTTPStatus.BAD_REQUEST,
+                    )
+                    return
                 except sqlite3.IntegrityError:
                     self.send_html("Tag finnes", "<h1>Tag-id er allerede i bruk</h1>", HTTPStatus.CONFLICT)
                     return
@@ -4018,5 +4299,6 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     init_db()
+    start_home_assistant_event_listener()
     print(f"{APP_NAME} v{APP_VERSION} ({APP_CODENAME}) starter på port {PORT}. Database: {DB_PATH}", flush=True)
     ThreadingHTTPServer(("", PORT), Handler).serve_forever()

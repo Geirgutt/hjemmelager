@@ -30,49 +30,20 @@ Home Assistant krever at et add-on-repository har `repository.yaml` i roten, og 
 
 ## NFC-flyt
 
-Home Assistant sin mobilapp kan lese NFC-tags. Når en tag scannes, fyrer Home Assistant eventen `tag_scanned` med en `tag_id`.
+Home Assistant sin mobilapp kan lese NFC-tags. Hjemmelager kobler seg automatisk til Home Assistant ved oppstart og lytter etter `tag_scanned`. Du trenger derfor ikke konfigurere IP-adresse, REST-kommando eller automasjon selv.
 
 ### Koble en NFC-tag til en vare
 
-Når REST-kommandoen og automasjonen under er lagt inn:
-
 1. Lag eller åpne en vare i Hjemmelager.
-2. Trykk **Koble NFC-tag**.
+2. Ved opprettelse kan du velge **Koble NFC-tag etter lagring**. På en eksisterende vare trykker du **Koble NFC-tag**.
 3. Skann NFC-klistremerket i Home Assistant-appen innen tre minutter.
 4. Hjemmelager kobler taggen automatisk til varen.
 
 Hvis taggen allerede tilhører en annen vare, får du beskjed og ingenting flyttes automatisk. Feltet **Home Assistant Tag-ID** under avanserte varefelter kan fortsatt brukes som manuell reserve.
 
-### REST-kommando i Home Assistant
+Dette registrerer scannen direkte i Hjemmelager. Under en aktiv **Koble NFC-tag**-økt kobles neste ukjente tag til den valgte varen. Ellers oppdateres “sist scannet” for kjente tagger.
 
-Legg dette i `configuration.yaml`:
-
-```yaml
-rest_command:
-  hjemmelager_tag_touch:
-    url: "http://local-hjemmelager:8099/api/tag/{{ tag_id }}/touch"
-    method: POST
-    content_type: "application/json"
-    payload: "{}"
-```
-
-Hvis add-onen er installert fra GitHub, kan hostname være et generert repo-navn i stedet for `local-hjemmelager`. Se add-onens logg eller Supervisor-info hvis DNS-navnet ikke svarer. Som fallback kan du aktivere port `8099` i add-onens **Network**-innstillinger og bruke `http://homeassistant.local:8099`.
-
-### Automasjon for alle tagger
-
-```yaml
-alias: Hjemmelager NFC
-mode: queued
-trigger:
-  - platform: event
-    event_type: tag_scanned
-action:
-  - service: rest_command.hjemmelager_tag_touch
-    data:
-      tag_id: "{{ trigger.event.data.tag_id }}"
-```
-
-Dette registrerer scannen i Hjemmelager. Under en aktiv **Koble NFC-tag**-økt kobles neste ukjente tag til den valgte varen. Ellers oppdateres “sist scannet” for kjente tagger, mens ukjente tagger returnerer `404`.
+I add-onens logg skal det stå **Home Assistant NFC-lytter er tilkoblet og klar**. Den tidligere manuelle `rest_command`-automasjonen kan fjernes når denne meldingen vises.
 
 ## Strekkode og QR
 
@@ -108,6 +79,8 @@ Hvis kamera fortsatt ikke starter, bruk feltet **Manuell kode** på samme side. 
 ## Pris, holdbarhet og åpne pakker
 
 Varer kan ha pris og holdbarhetsdato. Utløpte varer og varer med best før-dato innen 14 dager får et tydelig merke. Når slike varer finnes, vises en kompakt rad på lageroversikten som åpner en ferdig filtrert liste med nærmeste dato først. Det samme valget finnes under filterikonet.
+
+Ved opprettelse og redigering kan du velge et bilde fra telefonens bildebibliotek eller åpne kameraet. Bildet vises før lagring, og store mobilbilder skaleres og komprimeres automatisk for å unngå at Home Assistant-visningen stopper under opplasting.
 
 For forbruksvarer kan du skille mellom uåpnede varer på lager og åpne pakker:
 

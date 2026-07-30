@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.1 - Trygg oversikt
+
+- Koblede Hjemmelager direkte til Home Assistants NFC-hendelser, uten manuell IP-adresse, REST-kommando eller automasjon.
+- Gjorde det mulig å gå rett til NFC-kobling etter at en ny vare er lagret.
+- Forbedret bildevalg på mobil med bildebibliotek, kamera, forhåndsvisning og automatisk komprimering av store bilder.
+- Erstattet svarte feilsider ved bildeproblemer med en forståelig melding og trygg vei tilbake.
+- Utvidet testpakken til å dekke automatisk NFC-kobling, bildevalg og bildeopplasting.
+
 ## 0.5.0 - Trygg oversikt
 
 - La inn komplett sikkerhetskopi og kontrollert gjenoppretting med automatisk kopi av dagens data før noe erstattes.

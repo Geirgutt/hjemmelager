@@ -243,6 +243,58 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertIn("Lagre gjenstand", form)
         self.assertIn('<option value="thing" selected>Ting</option>', form)
 
+    def test_image_picker_does_not_force_camera(self):
+        form = self.app.item_form()
+
+        self.assertIn("Velg eller ta bilde", form)
+        self.assertNotIn('capture="environment"', form)
+        self.assertIn('accept="image/*"', form)
+        self.assertIn("Store bilder gjøres mindre automatisk", form)
+
+    def test_new_item_can_continue_directly_to_nfc_linking(self):
+        form = self.app.item_form()
+        self.assertIn("Koble NFC-tag etter lagring", form)
+
+        item = self.create_item("NFC etter lagring")
+        redirect = self.app.new_item_redirect(
+            item,
+            {"link_nfc_after_save": "1"},
+        )
+
+        self.assertEqual(redirect, f"item/{item['id']}/tag-link")
+        session = self.app.get_tag_link_session(item["id"])
+        self.assertEqual(session["status"], "waiting")
+
+    def test_multipart_image_is_saved_on_new_item(self):
+        boundary = "hjemmelager-test-boundary"
+        image_bytes = b"\xff\xd8fake-jpeg\xff\xd9"
+        raw = (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="name"\r\n\r\n'
+            "Bildeprodukt\r\n"
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="image_file"; filename="produkt.jpg"\r\n'
+            "Content-Type: image/jpeg\r\n\r\n"
+        ).encode() + image_bytes + f"\r\n--{boundary}--\r\n".encode()
+
+        data = self.app.parse_multipart_form(
+            raw,
+            f"multipart/form-data; boundary={boundary}",
+        )
+        item = self.app.create_item(data)
+
+        self.assertEqual(item["name"], "Bildeprodukt")
+        self.assertTrue(item["image_url"].startswith("data:image/jpeg;base64,"))
+
+    def test_oversized_processed_image_is_rejected(self):
+        oversized = (
+            "data:image/jpeg;base64,"
+            + "A" * ((self.app.MAX_STORED_IMAGE_BYTES * 4 // 3) + 16)
+        )
+
+        with self.assertRaisesRegex(ValueError, "fortsatt for stort"):
+            self.app.image_value({"image_file_data_url": oversized})
+
     def test_alerts_combine_low_stock_and_expiry_without_double_counting(self):
         self.create_item(
             "Melk",
@@ -323,6 +375,40 @@ class HjemmelagerTests(unittest.TestCase):
 
         self.assertEqual(product["status"], "not_found")
         self.assertIn("manuelt", product["message"])
+
+    def test_home_assistant_tag_event_links_waiting_item(self):
+        item = self.create_item("Kontortagg")
+        self.app.start_tag_link(item["id"])
+
+        result = self.app.handle_home_assistant_event(
+            {
+                "type": "event",
+                "event": {
+                    "event_type": "tag_scanned",
+                    "data": {"tag_id": "office-tag-01"},
+                },
+            }
+        )
+
+        self.assertEqual(result["status"], "linked")
+        self.assertEqual(self.app.get_item(item["id"])["tag_id"], "office-tag-01")
+        self.assertEqual(
+            self.app.get_tag_link_session(item["id"])["status"],
+            "linked",
+        )
+
+    def test_home_assistant_listener_ignores_other_events(self):
+        result = self.app.handle_home_assistant_event(
+            {
+                "type": "event",
+                "event": {
+                    "event_type": "state_changed",
+                    "data": {"tag_id": "must-not-link"},
+                },
+            }
+        )
+
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":

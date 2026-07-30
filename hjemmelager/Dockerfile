@@ -1,6 +1,6 @@
 FROM ghcr.io/home-assistant/base:latest
 
-RUN apk add --no-cache python3
+RUN apk add --no-cache python3 py3-websocket-client
 
 WORKDIR /app
 COPY app /app
