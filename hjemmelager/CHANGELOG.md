@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.0 - Profesjonell finish
+
+- Samordnet statusfarger, knapper, overskrifter og kompakte avstander i hele appen.
+- La inn synlig lagringsrespons som hindrer doble trykk mens et skjema behandles.
+- Forbedret tastatur- og skjermleserstøtte med hopp-lenke, levende status og tydelig fokus.
+- Respekterer nå redusert bevegelse fra telefonens eller nettleserens innstillinger.
+- Forbedret installasjonsveiledningen og la inn en kort «første fem minutter»-flyt.
+- Kontrollert den samlede visningen i mørkt mobilformat på 390 × 844 piksler.
+- Utvidet testpakken til 35 tester.
+
 ## 0.8.0 - Oversikt og trygghet
 
 - La inn en kompakt status på lagerforsiden med totalt antall, handlebehov, best før og siste endring.

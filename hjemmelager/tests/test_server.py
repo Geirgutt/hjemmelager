@@ -541,6 +541,14 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertIn("Batterier: lager endret (+2)", content)
         self.assertIn("Historikk", content)
 
+    def test_page_has_keyboard_and_screen_reader_support(self):
+        content = self.app.page("Varer", "<h1>Test</h1>")
+
+        self.assertIn('class="skip-link"', content)
+        self.assertIn('id="main-content" tabindex="-1"', content)
+        self.assertIn('role="status" aria-live="polite"', content)
+        self.assertIn("prefers-reduced-motion", content)
+
 
 if __name__ == "__main__":
     unittest.main()

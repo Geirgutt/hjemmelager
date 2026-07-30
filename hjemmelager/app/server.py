@@ -26,7 +26,7 @@ except ImportError:
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "0.8.0"
+APP_VERSION = "0.9.0"
 APP_CODENAME = "Trygg oversikt"
 TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
@@ -1604,6 +1604,7 @@ def page(title, body, base_path=""):
       }}
     }}
     * {{ box-sizing: border-box; }}
+    html {{ scroll-behavior: smooth; }}
     body {{
       margin: 0;
       background: var(--bg);
@@ -1643,6 +1644,19 @@ def page(title, body, base_path=""):
       justify-content: flex-end;
     }}
     a, button {{ touch-action: manipulation; }}
+    .skip-link {{
+      position: fixed;
+      inset: 8px auto auto 8px;
+      z-index: 100;
+      padding: 9px 12px;
+      border-radius: 9px;
+      color: white;
+      background: var(--accent);
+      transform: translateY(-150%);
+    }}
+    .skip-link:focus {{
+      transform: translateY(0);
+    }}
     .nav, .btn {{
       border: 1px solid var(--line);
       border-radius: 10px;
@@ -1652,6 +1666,10 @@ def page(title, body, base_path=""):
       text-decoration: none;
       font-weight: 650;
       cursor: pointer;
+    }}
+    .btn:disabled {{
+      cursor: wait;
+      opacity: .7;
     }}
     .nav.active {{
       color: var(--accent);
@@ -1765,6 +1783,39 @@ def page(title, body, base_path=""):
       color: var(--muted);
       font-size: .8rem;
       white-space: nowrap;
+    }}
+    .page-heading {{
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }}
+    .page-heading h1, .page-heading p {{
+      margin: 0;
+    }}
+    .save-status {{
+      position: fixed;
+      z-index: 50;
+      inset: auto 12px calc(82px + env(safe-area-inset-bottom)) auto;
+      max-width: min(300px, calc(100vw - 24px));
+      padding: 9px 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      color: var(--text);
+      background: var(--panel);
+      box-shadow: var(--shadow-sm);
+    }}
+    .save-status:empty {{
+      display: none;
+    }}
+    @media (prefers-reduced-motion: reduce) {{
+      html {{ scroll-behavior: auto; }}
+      *, *::before, *::after {{
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .01ms !important;
+      }}
     }}
     .toolbar {{
       display: grid;
@@ -2425,9 +2476,9 @@ def page(title, body, base_path=""):
       gap: 8px;
       margin-bottom: 10px;
       padding: 11px;
-      border: 1px solid color-mix(in srgb, var(--positive) 36%, var(--line));
+      border: 1px solid color-mix(in srgb, var(--ok) 36%, var(--line));
       border-radius: 12px;
-      background: color-mix(in srgb, var(--positive) 8%, var(--panel));
+      background: color-mix(in srgb, var(--ok) 8%, var(--panel));
     }}
     .created-notice h2, .created-notice p {{
       margin: 0;
@@ -2439,7 +2490,7 @@ def page(title, body, base_path=""):
       height: 28px;
       border-radius: 50%;
       color: var(--panel);
-      background: var(--positive);
+      background: var(--ok);
       font-weight: 800;
     }}
     .field-label {{
@@ -2614,13 +2665,13 @@ def page(title, body, base_path=""):
       background: var(--muted);
     }}
     .nfc-connection[data-state="connected"] {{
-      color: var(--positive);
-      border-color: color-mix(in srgb, var(--positive) 35%, var(--line));
-      background: color-mix(in srgb, var(--positive) 8%, var(--panel));
+      color: var(--ok);
+      border-color: color-mix(in srgb, var(--ok) 35%, var(--line));
+      background: color-mix(in srgb, var(--ok) 8%, var(--panel));
     }}
     .nfc-connection[data-state="connected"]::before {{
-      background: var(--positive);
-      box-shadow: 0 0 0 3px color-mix(in srgb, var(--positive) 16%, transparent);
+      background: var(--ok);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 16%, transparent);
     }}
     .nfc-connection[data-state="error"] {{
       color: var(--danger);
@@ -2977,6 +3028,7 @@ def page(title, body, base_path=""):
   </style>
 </head>
 <body>
+  <a class="skip-link" href="#main-content">Hopp til innhold</a>
   <header>
     <div class="bar">
       <a class="brand" href=".">{APP_NAME}</a>
@@ -2989,7 +3041,7 @@ def page(title, body, base_path=""):
       </nav>
     </div>
   </header>
-  <main>{body}</main>
+  <main id="main-content" tabindex="-1">{body}</main>
   <nav class="mobile-nav" aria-label="Hovedmeny">
     <a class="{mobile_nav_class("items")}" href=".">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5h16v12H4z"/><path d="M7 4.5h10l3 3H4z"/><path d="M9 11.5h6"/></svg>
@@ -3015,6 +3067,21 @@ def page(title, body, base_path=""):
   <footer class="bar muted" style="padding-top: 24px; padding-bottom: 24px;">
     {APP_NAME} v{APP_VERSION} · Kodenavn {APP_CODENAME}
   </footer>
+  <div class="save-status" role="status" aria-live="polite"></div>
+  <script>
+    document.addEventListener("submit", (event) => {{
+      const form = event.target;
+      if (!(form instanceof HTMLFormElement) || form.dataset.noBusy === "true") return;
+      const submitter = event.submitter || form.querySelector('button[type="submit"], button:not([type])');
+      if (!submitter) return;
+      window.setTimeout(() => {{
+        submitter.disabled = true;
+        submitter.setAttribute("aria-busy", "true");
+        const status = document.querySelector(".save-status");
+        if (status) status.textContent = "Lagrer …";
+      }}, 0);
+    }});
+  </script>
 </body>
 </html>"""
 

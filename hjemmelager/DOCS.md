@@ -14,19 +14,28 @@ Hjemmelager er en liten “Grocy-light” for Home Assistant. Den er laget for r
 
 ## Installasjon fra GitHub
 
-1. Legg repoet på GitHub.
-2. Sørg for at `repository.yaml` og `hjemmelager/config.yaml` peker til dette GitHub-repoet.
-3. I Home Assistant: gå til **Settings → Add-ons → Add-on Store**.
-4. Trykk menyen øverst til høyre, velg **Repositories**.
-5. Lim inn GitHub-URL-en til repoet, for eksempel:
+1. I Home Assistant: gå til **Settings → Add-ons → Add-on Store**.
+2. Trykk menyen øverst til høyre, velg **Repositories**.
+3. Lim inn denne adressen:
 
    ```text
    https://github.com/Geirgutt/tr-kker
    ```
 
-6. Trykk **Add**, finn **Hjemmelager**, installer og start.
+4. Trykk **Add**, finn **Hjemmelager**, installer og start.
+5. Slå på **Start on boot**. **Auto update** er valgfritt; la den være av hvis du vil lese endringsloggen før hver oppdatering.
 
 Home Assistant krever at et add-on-repository har `repository.yaml` i roten, og at hver add-on ligger i sin egen mappe med `config.yaml`.
+
+## De første fem minuttene
+
+1. Åpne **Ny** og skann en strekkode eller skriv inn din første vare.
+2. Sett et minimumsantall hvis varen skal dukke opp på handlelisten.
+3. Legg eventuelt til bilde, plassering og kategori.
+4. Koble en NFC-tag etter lagring hvis du bruker NFC-klistremerker.
+5. Åpne **Mer** for å kontrollere NFC-status, laste ned backup eller eksportere lageret til CSV.
+
+Lagerforsiden viser antall varer, hva som må kjøpes, varer med nær best før og siste endring. **Historikk** under **Mer** viser hva som har skjedd og åpner varen slik at feil kan rettes.
 
 ## NFC-flyt
 
@@ -141,6 +150,8 @@ Sensoren spør Hjemmelager lokalt én gang i timen. Automatiseringen oppdaterer 
 ## Oppdatering
 
 Add-onen skal ikke oppdatere sin egen container innenfra. Home Assistant Supervisor eier installasjon og oppdatering av add-ons.
+
+Etter at repo-listen oppdateres kan Home Assistant i noen minutter vise samme installerte og nyeste versjon selv om et varsel allerede er på vei. Vent til oppdateringen vises under **Notifications**, eller oppdater add-on-butikken på nytt.
 
 Når Hjemmelager er installert fra GitHub-repoet, vil Home Assistant normalt lage en `update`-entity for add-onen. Finn riktig entity-id i **Settings → Devices & services → Entities** ved å søke etter `Hjemmelager`.
 

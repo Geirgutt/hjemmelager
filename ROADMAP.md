@@ -64,12 +64,12 @@ Hjemmelager skal være en enkel og mobilvennlig Home Assistant-app som:
 
 ### 0.9 – Profesjonell finish
 
-- ⬜ Samordne typografi, ikoner, farger, avstander og knapper i hele appen.
-- ⬜ Kontrollere lys og mørk visning.
-- ⬜ Legge inn gode lastetilstander og små bekreftelser uten unødvendige popup-vinduer.
-- ⬜ Gjennomføre full mobiltest på iPhone og Android.
-- ⬜ Kontrollere tilgjengelighet: kontrast, trykkflater, tastatur og skjermleser.
-- ⬜ Forbedre installasjon, dokumentasjon og førstegangsopplevelse.
+- ✅ Samordne typografi, ikoner, farger, avstander og knapper i hele appen.
+- ✅ Kontrollere lys og mørk visning.
+- ✅ Legge inn gode lastetilstander og små bekreftelser uten unødvendige popup-vinduer.
+- 🟡 Gjennomføre full fysisk kameratest på iPhone og Android.
+- ✅ Kontrollere tilgjengelighet: kontrast, trykkflater, tastatur og skjermleser.
+- ✅ Forbedre installasjon, dokumentasjon og førstegangsopplevelse.
 
 ### 1.0 – Stabil utgave
 
