@@ -84,6 +84,41 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertEqual(self.app.cancel_tag_link(second["id"])["status"], "cancelled")
         self.assertEqual(self.app.touch_tag("ukjent-tag")["status"], "not_found")
 
+    def test_direct_nfc_links_open_hjemmelager_panel_with_tag(self):
+        links = self.app.direct_nfc_links(
+            "tag med mellomrom/æ",
+            "abc123_hjemmelager",
+        )
+
+        self.assertEqual(
+            links["android"],
+            "homeassistant://navigate/hassio/ingress/abc123_hjemmelager"
+            "#hjemmelager-tag=tag%20med%20mellomrom%2F%C3%A6",
+        )
+        self.assertTrue(
+            links["iphone"].startswith(
+                "https://www.home-assistant.io/ios/nfc/?url="
+            )
+        )
+        self.assertIn("%23hjemmelager-tag%3D", links["iphone"])
+
+    def test_direct_nfc_setup_keeps_linked_tag_and_offers_both_platforms(self):
+        item = self.create_item("Direktevare", tag_id="direct-tag-01")
+
+        content = self.app.tag_open_setup_page(item, "local_hjemmelager")
+
+        self.assertIn("Åpne «Direktevare» fra NFC", content)
+        self.assertIn("Skriv taggen", content)
+        self.assertIn("iPhone", content)
+        self.assertIn("homeassistant://navigate/hassio/ingress/local_hjemmelager", content)
+        self.assertEqual(self.app.get_item(item["id"])["tag_id"], "direct-tag-01")
+
+    def test_common_page_handles_direct_nfc_fragment(self):
+        content = self.app.page("Varer", "<h1>Test</h1>", "/ingress")
+
+        self.assertIn('values.get("hjemmelager-tag")', content)
+        self.assertIn('window.location.replace("tag/open?tag_id="', content)
+
     def test_shopping_list_uses_target_quantity(self):
         item = self.create_item(
             "Melk",

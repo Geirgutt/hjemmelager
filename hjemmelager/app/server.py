@@ -15,7 +15,7 @@ from difflib import SequenceMatcher
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlencode, parse_qs, unquote, urlparse
+from urllib.parse import quote, urlencode, parse_qs, unquote, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -26,8 +26,8 @@ except ImportError:
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "1.0.0"
-APP_CODENAME = "Stabil utgave"
+APP_VERSION = "1.0.1"
+APP_CODENAME = "Direkte åpning"
 TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
@@ -87,6 +87,7 @@ HOME_ASSISTANT_NFC_STATE = {
     "message": "Kobler til Home Assistant …",
     "updated_at": 0,
 }
+ADDON_SLUG_CACHE = None
 
 
 def now():
@@ -103,6 +104,48 @@ def set_home_assistant_nfc_state(status, message):
 def get_home_assistant_nfc_state():
     with HOME_ASSISTANT_NFC_LOCK:
         return dict(HOME_ASSISTANT_NFC_STATE)
+
+
+def get_addon_slug():
+    global ADDON_SLUG_CACHE
+    override = os.environ.get("HJEMMELAGER_ADDON_SLUG", "").strip()
+    if override:
+        return override
+    if ADDON_SLUG_CACHE is not None:
+        return ADDON_SLUG_CACHE
+
+    token = os.environ.get("SUPERVISOR_TOKEN", "").strip()
+    if not token:
+        return ""
+    request = Request(
+        "http://supervisor/addons/self/info",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    try:
+        with urlopen(request, timeout=3) as response:
+            payload = json.load(response)
+        ADDON_SLUG_CACHE = str((payload.get("data") or {}).get("slug") or "").strip()
+    except (HTTPError, URLError, OSError, ValueError):
+        ADDON_SLUG_CACHE = ""
+    return ADDON_SLUG_CACHE
+
+
+def direct_nfc_links(tag_id, addon_slug):
+    tag_id = str(tag_id or "").strip()
+    addon_slug = str(addon_slug or "").strip()
+    if not tag_id or not addon_slug:
+        return {"android": "", "iphone": ""}
+    tag_fragment = quote(tag_id, safe="")
+    panel_path = f"/hassio/ingress/{quote(addon_slug, safe='')}"
+    android = (
+        f"homeassistant://navigate{panel_path}"
+        f"#hjemmelager-tag={tag_fragment}"
+    )
+    iphone = (
+        "https://www.home-assistant.io/ios/nfc/?url="
+        + quote(android, safe="")
+    )
+    return {"android": android, "iphone": iphone}
 
 
 def handle_home_assistant_event(message):
@@ -3178,6 +3221,35 @@ def page(title, body, base_path=""):
   </footer>
   <div class="save-status" role="status" aria-live="polite"></div>
   <script>
+    function openNfcTagFromHomeAssistant() {{
+      let topWindow;
+      let fragment = "";
+      try {{
+        topWindow = window.top;
+        fragment = topWindow.location.hash || "";
+      }} catch (error) {{
+        return;
+      }}
+      const values = new URLSearchParams(fragment.replace(/^#/, ""));
+      const tagId = values.get("hjemmelager-tag");
+      if (!tagId) return;
+      values.delete("hjemmelager-tag");
+      try {{
+        const cleanFragment = values.toString();
+        topWindow.history.replaceState(
+          topWindow.history.state,
+          "",
+          topWindow.location.pathname + topWindow.location.search +
+            (cleanFragment ? "#" + cleanFragment : "")
+        );
+      }} catch (error) {{
+        // Åpningen virker fortsatt selv om Home Assistant ikke lar oss rydde URL-en.
+      }}
+      window.location.replace("tag/open?tag_id=" + encodeURIComponent(tagId));
+    }}
+
+    openNfcTagFromHomeAssistant();
+
     document.addEventListener("submit", (event) => {{
       const form = event.target;
       if (!(form instanceof HTMLFormElement) || form.dataset.noBusy === "true") return;
@@ -3819,7 +3891,10 @@ def tag_link_page(item, session):
         else ""
     )
     done = (
-        f'<a class="btn primary" href="item/{item["id"]}">Tilbake til varen</a>'
+        (
+            f'<a class="btn primary" href="item/{item["id"]}/tag-open-setup">'
+            "Gjør taggen klar for direkte åpning</a>"
+        )
         if status == "linked"
         else ""
     )
@@ -3868,7 +3943,9 @@ def tag_link_page(item, session):
           statusMessage.textContent = data.message || "";
           if (data.status === "linked") {{
             statusTitle.textContent = "Taggen er koblet ✓";
-            actions.innerHTML = '<a class="btn primary" href="item/' + itemId + '">Tilbake til varen</a>';
+            actions.innerHTML =
+              '<a class="btn primary" href="item/' + itemId +
+              '/tag-open-setup">Gjør taggen klar for direkte åpning</a>';
           }} else if (data.status === "conflict") {{
             statusTitle.textContent = "Taggen er allerede i bruk";
             actions.innerHTML =
@@ -3901,6 +3978,103 @@ def tag_link_page(item, session):
         if (initialStatus === "waiting") {{
           pollTimer = setInterval(pollStatus, 1000);
           pollStatus();
+        }}
+      </script>
+    """
+
+
+def tag_open_setup_page(item, addon_slug=None):
+    links = direct_nfc_links(item.get("tag_id"), addon_slug or get_addon_slug())
+    if not item.get("tag_id"):
+        return """
+          <section class="card stack">
+            <h1>Taggen er ikke koblet</h1>
+            <p>Koble en NFC-tag til varen før du gjør den klar for direkte åpning.</p>
+            <a class="btn primary" href="item/{id}/tag-link">Koble NFC-tag</a>
+          </section>
+        """.format(id=item["id"])
+    if not links["android"]:
+        return f"""
+          <section class="card stack">
+            <h1>Direkte åpning er ikke tilgjengelig ennå</h1>
+            <p>Hjemmelager fant ikke adressen til panelet i Home Assistant.</p>
+            <p class="muted">Start add-onen på nytt og åpne denne siden gjennom Home Assistant.</p>
+            <a class="btn" href="item/{item['id']}">Tilbake til varen</a>
+          </section>
+        """
+
+    android_url = esc(links["android"])
+    iphone_url = esc(links["iphone"])
+    return f"""
+      <section class="stack">
+        <div class="page-heading">
+          <div>
+            <h1>Åpne «{esc(item['name'])}» fra NFC</h1>
+            <p class="muted">Skriv taggen én gang til med lenken for telefonen din.</p>
+          </div>
+          <a class="btn" href="item/{item['id']}">Tilbake</a>
+        </div>
+        <div class="card stack">
+          <h2>Android</h2>
+          <p>Trykk knappen og hold telefonen mot NFC-taggen. Etterpå åpner taggen varen direkte i Home Assistant.</p>
+          <div class="actions">
+            <button class="btn primary" id="write-android-tag" type="button">Skriv taggen</button>
+            <button class="btn" type="button" data-copy-url="{android_url}">Kopier lenken</button>
+            <a class="btn" href="{android_url}">Test åpning</a>
+          </div>
+          <p class="muted" id="nfc-write-status" role="status"></p>
+        </div>
+        <div class="card stack">
+          <h2>iPhone</h2>
+          <p>Kopier lenken og skriv den som en URL på taggen i en NFC-skriverapp. Når NFC-varselet vises, trykker du «Åpne i Home Assistant».</p>
+          <div class="actions">
+            <button class="btn primary" type="button" data-copy-url="{iphone_url}">Kopier iPhone-lenken</button>
+            <a class="btn" href="{iphone_url}">Test åpning</a>
+          </div>
+          <p class="muted">Dette erstatter bare innholdet på klistremerket. Koblingen til varen i Hjemmelager beholdes.</p>
+        </div>
+      </section>
+      <script>
+        const androidNfcUrl = {links["android"]!r};
+        const writeButton = document.getElementById("write-android-tag");
+        const writeStatus = document.getElementById("nfc-write-status");
+
+        async function copyUrl(value, button) {{
+          try {{
+            await navigator.clipboard.writeText(value);
+            const oldText = button.textContent;
+            button.textContent = "Kopiert ✓";
+            window.setTimeout(() => button.textContent = oldText, 1800);
+          }} catch (error) {{
+            window.prompt("Kopier lenken:", value);
+          }}
+        }}
+
+        document.querySelectorAll("[data-copy-url]").forEach((button) => {{
+          button.addEventListener("click", () => copyUrl(button.dataset.copyUrl, button));
+        }});
+
+        if (!("NDEFReader" in window)) {{
+          writeButton.disabled = true;
+          writeStatus.textContent =
+            "Direkte skriving støttes ikke i denne nettleseren. Bruk «Kopier lenken» i en NFC-skriverapp.";
+        }} else {{
+          writeButton.addEventListener("click", async () => {{
+            writeButton.disabled = true;
+            writeStatus.textContent = "Hold telefonen inntil NFC-taggen …";
+            try {{
+              const writer = new NDEFReader();
+              await writer.write({{
+                records: [{{ recordType: "url", data: androidNfcUrl }}]
+              }});
+              writeStatus.textContent = "Taggen er skrevet ✓ Du kan teste den nå.";
+            }} catch (error) {{
+              writeStatus.textContent =
+                "Kunne ikke skrive taggen. Prøv igjen, eller kopier lenken til en NFC-skriverapp.";
+            }} finally {{
+              writeButton.disabled = false;
+            }}
+          }});
         }}
       </script>
     """
@@ -4693,6 +4867,25 @@ class Handler(BaseHTTPRequestHandler):
             self.redirect(scanned_code_redirect(code))
             return
 
+        if path == "tag/open":
+            tag_id = (parse_qs(urlparse(self.path).query).get("tag_id") or [""])[0]
+            result = touch_tag(tag_id)
+            if result.get("item_id"):
+                self.redirect(f"item/{result['item_id']}?scanned=1")
+                return
+            self.send_html(
+                "Ukjent NFC-tag",
+                """
+                  <section class="card stack">
+                    <h1>Taggen er ikke koblet til en vare</h1>
+                    <p>Koble taggen fra varesiden i Hjemmelager og prøv igjen.</p>
+                    <a class="btn primary" href=".">Åpne lageret</a>
+                  </section>
+                """,
+                HTTPStatus.NOT_FOUND,
+            )
+            return
+
         if path == "organize":
             self.send_html("Steder og kategorier", organize_page())
             return
@@ -4784,9 +4977,26 @@ class Handler(BaseHTTPRequestHandler):
                     if (query.get("changed") or ["0"])[0] == "1"
                     else ""
                 )
+                scanned_notice = (
+                    """
+                      <section class="created-notice">
+                        <span class="created-check" aria-hidden="true">✓</span>
+                        <h2>Åpnet fra NFC-tag</h2>
+                      </section>
+                    """
+                    if (query.get("scanned") or ["0"])[0] == "1"
+                    else ""
+                )
+                direct_open_action = (
+                    f'<a class="btn" href="item/{item["id"]}/tag-open-setup">'
+                    "Direkte NFC-åpning</a>"
+                    if item["tag_id"]
+                    else ""
+                )
                 body = f"""
                   {created_notice}
                   {changed_notice}
+                  {scanned_notice}
                   <div class="card item-detail-card">
                     {img}
                     <div class="item-title"><h1>{esc(item['name'])}</h1>{badges}</div>
@@ -4803,6 +5013,7 @@ class Handler(BaseHTTPRequestHandler):
                       <form method="post" action="item/{item['id']}/tag-link/start">
                         <button class="btn">{tag_action_label}</button>
                       </form>
+                      {direct_open_action}
                       {shopping_toggle}
                       <a class="btn" href="item/{item['id']}/edit">Rediger</a>
                     </div>
@@ -4832,6 +5043,20 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_html(
                     "Koble NFC-tag",
                     tag_link_page(item, get_tag_link_session(item["id"])),
+                )
+                return
+            if (
+                len(parts) == 3
+                and parts[2] == "tag-open-setup"
+                and parts[1].isdigit()
+            ):
+                item = get_item(int(parts[1]))
+                if not item:
+                    self.send_html("Ikke funnet", "<h1>Ikke funnet</h1>", HTTPStatus.NOT_FOUND)
+                    return
+                self.send_html(
+                    "Direkte NFC-åpning",
+                    tag_open_setup_page(item),
                 )
                 return
             if len(parts) == 3 and parts[2] == "edit" and parts[1].isdigit():

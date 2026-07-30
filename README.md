@@ -14,7 +14,7 @@ handleliste, best før, historikk og backup.
 - Egen oversikt for forbruksvarer og gjenstander.
 - Rask `+`/`−`, handleliste og angre etter lagerendring eller sletting.
 - Bilder fra kamera eller bildebibliotek.
-- Direkte NFC-kobling via Home Assistant-appen.
+- NFC-kobling og direkte åpning av riktig vare via Home Assistant-appen.
 - Lokale data med komplett backup og lesbar CSV-eksport.
 
 Se [ROADMAP.md](ROADMAP.md) for planen videre og

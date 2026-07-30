@@ -58,10 +58,13 @@ Home Assistant sin mobilapp kan lese NFC-tags. Hjemmelager kobler seg automatisk
 2. Ved opprettelse kan du velge **Koble NFC-tag etter lagring**. På en eksisterende vare trykker du **Koble NFC-tag**.
 3. Skann NFC-klistremerket i Home Assistant-appen innen tre minutter.
 4. Hjemmelager kobler taggen automatisk til varen.
+5. Velg **Gjør taggen klar for direkte åpning** og skriv taggen én gang til med lenken for Android eller iPhone.
 
 Hvis taggen allerede tilhører en annen vare, får du beskjed og ingenting flyttes automatisk. Feltet **Home Assistant Tag-ID** under avanserte varefelter kan fortsatt brukes som manuell reserve.
 
 Dette registrerer scannen direkte i Hjemmelager. Under en aktiv **Koble NFC-tag**-økt kobles neste ukjente tag til den valgte varen. Ellers oppdateres “sist scannet” for kjente tagger.
+
+Når taggen er gjort klar for direkte åpning, åpner den Home Assistant-panelet for Hjemmelager. Hjemmelager leser Tag-ID-en fra lenken, registrerer skanningen og viser riktig vare. På iPhone trykker du **Åpne i Home Assistant** i NFC-varselet. Android kan skrive taggen direkte når nettleseren støtter Web NFC; ellers kopierer du lenken til en NFC-skriverapp. Eksisterende tagger må skrives på nytt én gang for å få direkte åpning.
 
 I add-onens logg skal det stå **Home Assistant NFC-lytter er tilkoblet og klar**. Den tidligere manuelle `rest_command`-automasjonen kan fjernes når denne meldingen vises.
 

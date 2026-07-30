@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.1 - Direkte åpning
+
+- La til en egen NFC-lenke som åpner Home Assistant rett på varen som er koblet til taggen.
+- Registrerer skanningen og viser varen uten å endre antallet automatisk.
+- La inn veiledet omskriving av eksisterende tagger for Android og iPhone.
+
 ## 1.0.0 - Stabil utgave
 
 - Gjorde sletting tryggere: varen, NFC-taggen og historikken kan nå hentes tilbake umiddelbart.
