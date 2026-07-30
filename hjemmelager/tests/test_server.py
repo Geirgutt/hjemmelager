@@ -98,6 +98,49 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertNotIn("Melk", self.app.shopping_list_page())
         self.assertEqual(self.app.get_item(item["id"])["shopping_enabled"], 0)
 
+    def test_shopping_list_groups_remaining_items_by_category(self):
+        self.create_item(
+            "Melk",
+            quantity="0",
+            min_quantity="1",
+            category="Meieri",
+        )
+        self.create_item(
+            "Såpe",
+            quantity="0",
+            min_quantity="1",
+            category="Husholdning",
+        )
+
+        content = self.app.shopping_list_page()
+
+        self.assertIn("Meieri", content)
+        self.assertIn("Husholdning", content)
+        self.assertIn('class="shopping-groups"', content)
+
+    def test_search_tolerates_small_typing_errors(self):
+        item = self.create_item(
+            "Havregryn",
+            category="Matvarer",
+            location="Kjøkkenskap",
+        )
+
+        self.assertTrue(self.app.item_matches_search(item, "havregrn"))
+        self.assertTrue(self.app.item_matches_search(item, "kjokkenskap"))
+        self.assertFalse(self.app.item_matches_search(item, "slagdrill"))
+
+    def test_last_quantity_adjustment_can_be_undone_once(self):
+        item = self.create_item("Kaffe", quantity="3")
+        self.app.adjust_item(item["id"], -1, "web")
+
+        result = self.app.undo_last_adjustment(item["id"])
+        second_attempt = self.app.undo_last_adjustment(item["id"])
+
+        self.assertEqual(result["status"], "undone")
+        self.assertEqual(result["item"]["quantity"], 3)
+        self.assertEqual(second_attempt["status"], "unavailable")
+        self.assertIn("Angre siste endring", self.app.adjustment_notice(item))
+
     def test_edit_form_can_disable_shopping_list(self):
         item = self.create_item("Kaffe", min_quantity="2")
         updated = self.app.update_item(

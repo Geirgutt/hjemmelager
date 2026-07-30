@@ -47,12 +47,12 @@ Hjemmelager skal være en enkel og mobilvennlig Home Assistant-app som:
 
 ### 0.7 – Bedre daglig bruk
 
-- ⬜ Gjør lagerjustering enda raskere med kompakte hurtigvalg.
-- ⬜ Forbedre søk med toleranse for små skrivefeil og relevante forslag.
-- ⬜ Gjør handlelisten rask å bruke i butikk, også med mange varer.
-- ⬜ Gruppér handlelisten på en nyttig måte, for eksempel etter kategori.
-- ⬜ Legg inn enkel angre-funksjon etter endring eller sletting.
-- ⬜ Gjør tomme tilstander og feilmeldinger konkrete og hjelpsomme.
+- ✅ Gjør lagerjustering enda raskere med kompakte hurtigvalg.
+- ✅ Forbedre søk med toleranse for små skrivefeil og relevante forslag.
+- ✅ Gjør handlelisten rask å bruke i butikk, også med mange varer.
+- ✅ Gruppér handlelisten på en nyttig måte, for eksempel etter kategori.
+- ✅ Legg inn enkel angre-funksjon etter lagerendring.
+- ✅ Gjør tomme tilstander og feilmeldinger konkrete og hjelpsomme.
 
 ### 0.8 – Oversikt og trygghet
 

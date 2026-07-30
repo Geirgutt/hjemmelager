@@ -6,8 +6,10 @@ import os
 import sqlite3
 import threading
 import time
+import unicodedata
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
+from difflib import SequenceMatcher
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -22,7 +24,7 @@ except ImportError:
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "0.6.0"
+APP_VERSION = "0.7.0"
 APP_CODENAME = "Trygg oversikt"
 TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
@@ -598,6 +600,41 @@ def build_item_filters(
     return " and ".join(clauses), tuple(params)
 
 
+def normalized_search_text(value):
+    value = unicodedata.normalize("NFKD", str(value or "").lower())
+    value = "".join(char for char in value if not unicodedata.combining(char))
+    return " ".join(
+        "".join(char if char.isalnum() else " " for char in value).split()
+    )
+
+
+def item_matches_search(item, search):
+    query = normalized_search_text(search)
+    if not query:
+        return True
+    searchable = normalized_search_text(
+        " ".join(
+            str(item.get(field) or "")
+            for field in ("name", "location", "category", "tag_id", "barcode", "note")
+        )
+    )
+    if query in searchable:
+        return True
+    words = searchable.split()
+    for token in query.split():
+        if not any(
+            word.startswith(token)
+            or token.startswith(word)
+            or (
+                min(len(token), len(word)) >= 4
+                and SequenceMatcher(None, token, word).ratio() >= 0.74
+            )
+            for word in words
+        ):
+            return False
+    return True
+
+
 def create_alerts_payload(days=14):
     try:
         days = int(days)
@@ -965,6 +1002,61 @@ def adjust_item(item_id, delta, note=""):
         )
         save_event(conn, item_id, "adjusted", delta, quantity, note)
     return get_item(item_id)
+
+
+def undo_last_adjustment(item_id, max_age_seconds=600):
+    timestamp = now()
+    with db() as conn:
+        item = conn.execute("select * from items where id = ?", (item_id,)).fetchone()
+        if not item:
+            return None
+        event = conn.execute(
+            """
+            select * from events
+            where item_id = ?
+            order by id desc
+            limit 1
+            """,
+            (item_id,),
+        ).fetchone()
+        if (
+            not event
+            or event["action"] != "adjusted"
+            or event["delta"] is None
+            or timestamp - int(event["created_at"]) > max_age_seconds
+        ):
+            return {"status": "unavailable", "item": row_to_item(item)}
+        previous_quantity = max(
+            0,
+            float(event["quantity_after"] or 0) - float(event["delta"]),
+        )
+        conn.execute(
+            "update items set quantity = ?, updated_at = ? where id = ?",
+            (previous_quantity, timestamp, item_id),
+        )
+        save_event(
+            conn,
+            item_id,
+            "adjustment_undone",
+            -float(event["delta"]),
+            previous_quantity,
+            f"undo:{event['id']}",
+        )
+    return {"status": "undone", "item": get_item(item_id)}
+
+
+def adjustment_notice(item):
+    return f"""
+      <section class="created-notice">
+        <div>
+          <h2>Lageret er oppdatert</h2>
+          <p class="muted">Feil trykk? Du kan angre den siste endringen.</p>
+        </div>
+        <form method="post" action="item/{item['id']}/undo-adjustment">
+          <button class="btn">Angre siste endring</button>
+        </form>
+      </section>
+    """
 
 
 def set_shopping_checked(item_id, checked):
@@ -1925,6 +2017,28 @@ def page(title, body, base_path=""):
     .shopping-list {{
       display: grid;
       gap: 5px;
+    }}
+    .shopping-groups {{
+      display: grid;
+      gap: 12px;
+    }}
+    .shopping-group {{
+      display: grid;
+      gap: 6px;
+    }}
+    .shopping-group-heading {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-inline: 3px;
+      color: var(--muted);
+      font-size: .82rem;
+      font-weight: 750;
+      letter-spacing: .025em;
+      text-transform: uppercase;
+    }}
+    .shopping-group-count {{
+      color: var(--accent);
     }}
     .shopping-row {{
       display: grid;
@@ -3666,7 +3780,25 @@ def shopping_list_page():
           </form>
         """
 
-    remaining_html = "".join(shopping_row(item) for item in remaining)
+    def grouped_rows(group_items):
+        groups = {}
+        for item in group_items:
+            label = (item["category"] or "").strip() or "Annet"
+            groups.setdefault(label, []).append(item)
+        return "".join(
+            f"""
+              <section class="shopping-group">
+                <div class="shopping-group-heading">
+                  <span>{esc(label)}</span>
+                  <span class="shopping-group-count">{len(group)}</span>
+                </div>
+                <div class="shopping-list">{"".join(shopping_row(item) for item in group)}</div>
+              </section>
+            """
+            for label, group in sorted(groups.items(), key=lambda entry: entry[0].lower())
+        )
+
+    remaining_html = grouped_rows(remaining)
     completed_html = "".join(shopping_row(item) for item in completed)
     if not items:
         list_content = """
@@ -3677,7 +3809,7 @@ def shopping_list_page():
         """
     else:
         open_content = (
-            f'<section class="shopping-list">{remaining_html}</section>'
+            f'<section class="shopping-groups">{remaining_html}</section>'
             if remaining_html
             else '<div class="card"><strong>Alt er lagt i kurven ✓</strong></div>'
         )
@@ -3906,7 +4038,7 @@ class Handler(BaseHTTPRequestHandler):
                 low_only = False
                 expiry_only = False
             where, params = build_item_filters(
-                search,
+                "",
                 category,
                 location,
                 low_only,
@@ -3918,6 +4050,8 @@ class Handler(BaseHTTPRequestHandler):
                 params,
                 sort="best_before" if expiry_only else "default",
             )
+            if search:
+                items = [item for item in items if item_matches_search(item, search)]
             categories = distinct_values("category")
             locations = distinct_values("location")
             consumable_count = count_items("consumable")
@@ -4168,8 +4302,14 @@ class Handler(BaseHTTPRequestHandler):
                     if (query.get("created") or ["0"])[0] == "1"
                     else ""
                 )
+                changed_notice = (
+                    adjustment_notice(item)
+                    if (query.get("changed") or ["0"])[0] == "1"
+                    else ""
+                )
                 body = f"""
                   {created_notice}
+                  {changed_notice}
                   <div class="card item-detail-card">
                     {img}
                     <div class="item-title"><h1>{esc(item['name'])}</h1>{badges}</div>
@@ -4449,6 +4589,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if len(parts) == 3 and parts[2] == "adjust" and parts[1].isdigit():
                 adjust_item(int(parts[1]), parse_float(data.get("delta")), "web")
+                self.redirect(f"item/{parts[1]}?changed=1")
+                return
+            if (
+                len(parts) == 3
+                and parts[2] == "undo-adjustment"
+                and parts[1].isdigit()
+            ):
+                undo_last_adjustment(int(parts[1]))
                 self.redirect(f"item/{parts[1]}")
                 return
             if len(parts) == 3 and parts[2] == "open" and parts[1].isdigit():

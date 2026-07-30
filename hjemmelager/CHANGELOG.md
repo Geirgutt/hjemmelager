@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.0 - Raskere hverdag
+
+- Gjorde søket tolerant for små skrivefeil, ulike skrivemåter og norske tegn.
+- Grupperte handlelisten etter kategori og beholdt en kompakt sjekkliste for bruk i butikk.
+- La inn en tidsbegrenset angreknapp etter endring av lagerantall.
+- Beholdt raske pluss-, minus- og åpne-handlinger direkte i både kort- og listevisning.
+- Gjorde tomme søkeresultater konkrete, med snarveier tilbake til lageret eller ny registrering.
+- Utvidet testpakken til 31 tester, inkludert søk, handlelistegruppering og angrefunksjon.
+
 ## 0.6.0 - Trygg oversikt
 
 - Gjorde **Ny** til en kort veiviser med egne valg for strekkode, manuell vare og gjenstand.
