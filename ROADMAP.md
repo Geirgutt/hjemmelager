@@ -56,11 +56,11 @@ Hjemmelager skal være en enkel og mobilvennlig Home Assistant-app som:
 
 ### 0.8 – Oversikt og trygghet
 
-- ⬜ Lag en enkel startside med det viktigste: lav beholdning, utløpsdatoer og nylige handlinger.
-- ⬜ Vis integrasjonsstatus for NFC, produktoppslag og backup på ett forståelig sted.
-- ⬜ Gjør backup og gjenoppretting enklere å forstå og kontrollere.
-- ⬜ Legg inn import og eksport i et lesbart format.
-- ⬜ Forbedre historikken slik at man ser hva som ble endret og kan rette feil.
+- ✅ Lag en enkel startside med det viktigste: lav beholdning, utløpsdatoer og nylige handlinger.
+- ✅ Vis integrasjonsstatus for NFC, produktoppslag og backup på ett forståelig sted.
+- ✅ Gjør backup og gjenoppretting enklere å forstå og kontrollere.
+- ✅ Legg inn import og eksport i et lesbart format.
+- ✅ Forbedre historikken slik at man ser hva som ble endret og kan rette feil.
 
 ### 0.9 – Profesjonell finish
 

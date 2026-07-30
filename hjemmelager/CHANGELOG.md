@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.0 - Oversikt og trygghet
+
+- La inn en kompakt status på lagerforsiden med totalt antall, handlebehov, best før og siste endring.
+- Samlet forståelig status for NFC, produktoppslag og backup under Mer.
+- La inn en egen historikkside med tidspunkt, forklarende hendelser og lenke tilbake til varen.
+- La inn en lesbar CSV-eksport som åpnes riktig i vanlige regnearkprogrammer og beholder norske tegn.
+- Gjorde backup, eksport og gjenoppretting lettere å finne og skille fra hverandre.
+- Utvidet testpakken til 34 tester, inkludert statusoversikt, historikk og eksport.
+
 ## 0.7.0 - Raskere hverdag
 
 - Gjorde søket tolerant for små skrivefeil, ulike skrivemåter og norske tegn.

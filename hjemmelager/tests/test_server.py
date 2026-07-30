@@ -503,6 +503,44 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertIn('data-state="connected"', content)
         self.assertIn("Klar til å motta NFC-skanningen.", content)
 
+    def test_dashboard_summary_combines_inventory_alerts_and_activity(self):
+        self.create_item(
+            "Melk",
+            quantity="0",
+            min_quantity="1",
+            best_before=date.today().isoformat(),
+        )
+
+        summary = self.app.dashboard_summary()
+
+        self.assertEqual(summary["total"], 1)
+        self.assertEqual(summary["low_stock"], 1)
+        self.assertEqual(summary["best_before"], 1)
+        self.assertEqual(summary["recent"]["item_name"], "Melk")
+
+    def test_inventory_csv_is_readable_and_keeps_norwegian_text(self):
+        self.create_item(
+            "Havregryn",
+            quantity="2",
+            category="Tørrvarer",
+            location="Kjøkken",
+        )
+
+        content = self.app.inventory_csv_bytes().decode("utf-8-sig")
+
+        self.assertIn("Navn;Type;Antall;Enhet", content)
+        self.assertIn("Havregryn;Forbruksvare;2;stk", content)
+        self.assertIn("Tørrvarer;Kjøkken", content)
+
+    def test_activity_page_explains_recent_change(self):
+        item = self.create_item("Batterier")
+        self.app.adjust_item(item["id"], 2)
+
+        content = self.app.activity_page()
+
+        self.assertIn("Batterier: lager endret (+2)", content)
+        self.assertIn("Historikk", content)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import base64
+import csv
 import html
+import io
 import json
 import os
 import sqlite3
@@ -24,7 +26,7 @@ except ImportError:
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "0.7.0"
+APP_VERSION = "0.8.0"
 APP_CODENAME = "Trygg oversikt"
 TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
@@ -382,6 +384,110 @@ def count_items(kind=""):
     with db() as conn:
         row = conn.execute(query, params).fetchone()
     return int(row["total"])
+
+
+def dashboard_summary():
+    alerts = create_alerts_payload()
+    with db() as conn:
+        total = int(conn.execute("select count(*) as total from items").fetchone()["total"])
+        recent = conn.execute(
+            """
+            select events.*, items.name as item_name
+            from events
+            left join items on items.id = events.item_id
+            order by events.id desc
+            limit 1
+            """
+        ).fetchone()
+    return {
+        "total": total,
+        "low_stock": alerts["summary"]["low_stock"],
+        "best_before": alerts["summary"]["best_before"],
+        "recent": dict(recent) if recent else None,
+    }
+
+
+EVENT_LABELS = {
+    "created": "opprettet",
+    "updated": "oppdatert",
+    "adjusted": "lager endret",
+    "adjustment_undone": "lagerendring angret",
+    "opened_adjusted": "åpent antall endret",
+    "package_opened": "pakke åpnet",
+    "tag_linked": "NFC-tag koblet",
+    "tag_unlinked": "NFC-tag fjernet",
+}
+
+
+def recent_events(limit=50):
+    limit = max(1, min(int(limit), 200))
+    with db() as conn:
+        rows = conn.execute(
+            """
+            select events.*, items.name as item_name
+            from events
+            left join items on items.id = events.item_id
+            order by events.id desc
+            limit ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def format_event_time(timestamp):
+    return datetime.fromtimestamp(int(timestamp)).strftime("%d.%m.%Y kl. %H:%M")
+
+
+def event_description(event):
+    name = event.get("item_name") or "Slettet vare"
+    action = EVENT_LABELS.get(event.get("action"), event.get("action") or "endret")
+    delta = event.get("delta")
+    detail = ""
+    if delta not in (None, 0):
+        detail = f" ({'+' if float(delta) > 0 else ''}{fmt_num(delta)})"
+    return f"{name}: {action}{detail}"
+
+
+def inventory_csv_bytes():
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, delimiter=";")
+    writer.writerow(
+        [
+            "Navn",
+            "Type",
+            "Antall",
+            "Enhet",
+            "Minimum",
+            "Fyll opp til",
+            "Kategori",
+            "Plassering",
+            "Best før",
+            "Pris",
+            "Strekkode",
+            "NFC-tag",
+            "Notat",
+        ]
+    )
+    for item in list_items():
+        writer.writerow(
+            [
+                item["name"],
+                "Forbruksvare" if item["kind"] == "consumable" else "Gjenstand",
+                fmt_num(item["quantity"]),
+                item["unit"],
+                fmt_num(item["min_quantity"]),
+                fmt_num(item["target_quantity"]),
+                item["category"],
+                item["location"],
+                item["best_before"],
+                fmt_price(item["price"]),
+                item["barcode"],
+                item["tag_id"] or "",
+                item["note"],
+            ]
+        )
+    return ("\ufeff" + output.getvalue()).encode("utf-8")
 
 
 def distinct_values(column):
@@ -1571,6 +1677,94 @@ def page(title, body, base_path=""):
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
       gap: 12px;
+    }}
+    .dashboard-strip {{
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 7px;
+      margin: 0 0 10px;
+    }}
+    .dashboard-stat {{
+      display: grid;
+      gap: 1px;
+      min-width: 0;
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      color: var(--muted);
+      background: var(--panel);
+      font-size: .78rem;
+      text-decoration: none;
+    }}
+    .dashboard-stat strong {{
+      color: var(--text);
+      font-size: 1.05rem;
+      line-height: 1.2;
+    }}
+    .dashboard-stat.attention strong {{
+      color: var(--accent-2);
+    }}
+    .dashboard-recent {{
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      margin: -2px 0 11px;
+      color: var(--muted);
+      font-size: .8rem;
+    }}
+    .dashboard-recent a {{
+      color: var(--accent);
+      white-space: nowrap;
+    }}
+    .status-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 8px;
+      margin-top: 10px;
+    }}
+    .status-item {{
+      display: grid;
+      gap: 2px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: color-mix(in srgb, var(--panel) 88%, var(--bg));
+    }}
+    .status-item strong {{
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }}
+    .status-dot {{
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--ok);
+    }}
+    .status-dot.waiting {{
+      background: var(--accent-2);
+    }}
+    .history-list {{
+      display: grid;
+      gap: 0;
+      padding: 0;
+      margin: 0;
+      list-style: none;
+    }}
+    .history-row {{
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--line);
+    }}
+    .history-row:last-child {{
+      border-bottom: 0;
+    }}
+    .history-row time {{
+      color: var(--muted);
+      font-size: .8rem;
+      white-space: nowrap;
     }}
     .toolbar {{
       display: grid;
@@ -3874,10 +4068,36 @@ def organize_page():
         )
     else:
         alert_status = "Ingen varer krever oppmerksomhet nå"
+    nfc = get_home_assistant_nfc_state()
+    nfc_ready = nfc["status"] == "connected"
+    nfc_label = "Tilkoblet" if nfc_ready else "Kobler til"
+    nfc_dot = "" if nfc_ready else " waiting"
     location_list = "".join(f"<li>{esc(value)}</li>" for value in locations) or "<li>Ingen steder ennå</li>"
     category_list = "".join(f"<li>{esc(value)}</li>" for value in categories) or "<li>Ingen kategorier ennå</li>"
     return f"""
     <h1>Steder og kategorier</h1>
+    <section class="card">
+      <h2>Systemstatus</h2>
+      <p class="muted">Det viktigste samlet på ett sted.</p>
+      <div class="status-grid">
+        <div class="status-item">
+          <strong><span class="status-dot{nfc_dot}"></span>NFC: {nfc_label}</strong>
+          <small class="muted">{esc(nfc["message"])}</small>
+        </div>
+        <div class="status-item">
+          <strong><span class="status-dot"></span>Produktoppslag: Klar</strong>
+          <small class="muted">Brukes automatisk etter strekkodeskanning.</small>
+        </div>
+        <div class="status-item">
+          <strong><span class="status-dot"></span>Backup: Klar</strong>
+          <small class="muted">Komplett kopi kan lastes ned når som helst.</small>
+        </div>
+      </div>
+      <div class="actions" style="margin-top: 10px;">
+        <a class="btn" href="activity">Vis historikk</a>
+        <a class="btn" href="export/items.csv">Eksporter regneark</a>
+      </div>
+    </section>
     <section class="grid">
       <div class="card">
         <h2>Plasseringer</h2>
@@ -3915,6 +4135,7 @@ def organize_page():
       <h2>Data og sikkerhetskopi</h2>
       <p class="muted">Last ned en komplett kopi av varer, bilder, steder, kategorier og historikk.</p>
       <a class="btn primary" href="backup/download">Last ned sikkerhetskopi</a>
+      <a class="btn" href="export/items.csv">Eksporter lesbar CSV</a>
       <p class="field-help">Filen endrer ingenting i lageret. Oppbevar den et trygt sted.</p>
       <details class="form-section" style="margin-top: 10px;">
         <summary>
@@ -3939,6 +4160,45 @@ def organize_page():
         </div>
       </details>
     </section>
+    """
+
+
+def activity_page():
+    events = recent_events()
+    if events:
+        rows = "".join(
+            f"""
+            <li class="history-row">
+              <span>{
+                  f'<a href="item/{event["item_id"]}">{esc(event_description(event))}</a>'
+                  if event.get("item_name") and event.get("item_id")
+                  else esc(event_description(event))
+              }</span>
+              <time datetime="{datetime.fromtimestamp(int(event['created_at'])).isoformat()}">
+                {format_event_time(event["created_at"])}
+              </time>
+            </li>
+            """
+            for event in events
+        )
+        content = f'<ol class="history-list">{rows}</ol>'
+    else:
+        content = """
+        <div class="empty-state">
+          <h2>Ingen historikk ennå</h2>
+          <p class="muted">Endringer dukker opp her når du begynner å bruke lageret.</p>
+          <a class="btn primary" href="new">Legg til første vare</a>
+        </div>
+        """
+    return f"""
+    <div class="page-heading">
+      <div>
+        <h1>Historikk</h1>
+        <p class="muted">De siste endringene i lageret.</p>
+      </div>
+      <a class="btn" href="organize">Tilbake</a>
+    </div>
+    <section class="card">{content}</section>
     """
 
 
@@ -4023,6 +4283,15 @@ class Handler(BaseHTTPRequestHandler):
             self.send_download(data, filename, "application/json; charset=utf-8")
             return
 
+        if path == "export/items.csv":
+            filename = f"hjemmelager-{date.today().isoformat()}.csv"
+            self.send_download(
+                inventory_csv_bytes(),
+                filename,
+                "text/csv; charset=utf-8",
+            )
+            return
+
         if path in ("", "items"):
             query = parse_qs(urlparse(self.path).query)
             search = (query.get("q") or [""])[0].strip()
@@ -4062,6 +4331,12 @@ class Handler(BaseHTTPRequestHandler):
                     "kind = 'consumable' and best_before != '' and best_before <= ?",
                     (expiry_threshold,),
                 )
+            )
+            summary = dashboard_summary()
+            recent_summary = (
+                esc(event_description(summary["recent"]))
+                if summary["recent"]
+                else "Ingen endringer ennå"
             )
             current_params = {
                 "q": search,
@@ -4138,6 +4413,21 @@ class Handler(BaseHTTPRequestHandler):
                 """
             body = f"""
               <h1 class="inventory-title">Mitt lager</h1>
+              <section class="dashboard-strip" aria-label="Kort status">
+                <a class="dashboard-stat" href="{all_url}">
+                  <strong>{summary["total"]}</strong><span>i lageret</span>
+                </a>
+                <a class="dashboard-stat {"attention" if summary["low_stock"] else ""}" href="low-stock">
+                  <strong>{summary["low_stock"]}</strong><span>må kjøpes</span>
+                </a>
+                <a class="dashboard-stat {"attention" if summary["best_before"] else ""}" href="{expiry_url}">
+                  <strong>{summary["best_before"]}</strong><span>best før</span>
+                </a>
+              </section>
+              <div class="dashboard-recent">
+                <span>Sist: {recent_summary}</span>
+                <a href="activity">Historikk</a>
+              </div>
               <nav class="inventory-tabs" aria-label="Type lager">
                 <a class="inventory-tab {"active" if kind_view == "consumable" else ""}" href="{consumable_url}">
                   <span>Forbruk</span><span class="inventory-tab-count">{consumable_count}</span>
@@ -4222,6 +4512,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "organize":
             self.send_html("Steder og kategorier", organize_page())
+            return
+
+        if path == "activity":
+            self.send_html("Historikk", activity_page())
             return
 
         if path == "low-stock":
