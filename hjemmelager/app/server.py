@@ -26,8 +26,8 @@ except ImportError:
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "0.9.0"
-APP_CODENAME = "Trygg oversikt"
+APP_VERSION = "1.0.0"
+APP_CODENAME = "Stabil utgave"
 TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
@@ -302,6 +302,14 @@ def init_db():
                 updated_at integer not null,
                 foreign key (item_id) references items(id) on delete cascade
             );
+
+            create table if not exists deleted_items (
+                id integer primary key autoincrement,
+                original_item_id integer not null,
+                item_json text not null,
+                events_json text not null default '[]',
+                deleted_at integer not null
+            );
             """
         )
         columns = {row["name"] for row in conn.execute("pragma table_info(items)").fetchall()}
@@ -416,6 +424,7 @@ EVENT_LABELS = {
     "package_opened": "pakke åpnet",
     "tag_linked": "NFC-tag koblet",
     "tag_unlinked": "NFC-tag fjernet",
+    "deletion_undone": "sletting angret",
 }
 
 
@@ -585,6 +594,7 @@ def restore_backup_payload(payload):
 
     with db() as conn:
         conn.execute("delete from tag_link_sessions")
+        conn.execute("delete from deleted_items")
         conn.execute("delete from events")
         conn.execute("delete from items")
         conn.execute("delete from locations")
@@ -1165,6 +1175,20 @@ def adjustment_notice(item):
     """
 
 
+def deletion_notice(deletion_id):
+    return f"""
+      <section class="created-notice">
+        <div>
+          <h2>Varen er slettet</h2>
+          <p class="muted">Var det en feil? Varen og historikken kan hentes tilbake nå.</p>
+        </div>
+        <form method="post" action="deleted/{int(deletion_id)}/restore">
+          <button class="btn">Angre sletting</button>
+        </form>
+      </section>
+    """
+
+
 def set_shopping_checked(item_id, checked):
     with db() as conn:
         row = conn.execute("select * from items where id = ?", (item_id,)).fetchone()
@@ -1211,11 +1235,96 @@ def set_shopping_enabled(item_id, enabled):
 
 def delete_item(item_id):
     with db() as conn:
-        row = conn.execute("select id from items where id = ?", (item_id,)).fetchone()
+        row = conn.execute("select * from items where id = ?", (item_id,)).fetchone()
         if not row:
-            return False
+            return None
+        events = [
+            dict(event)
+            for event in conn.execute(
+                "select * from events where item_id = ? order by id",
+                (item_id,),
+            ).fetchall()
+        ]
+        cursor = conn.execute(
+            """
+            insert into deleted_items
+                (original_item_id, item_json, events_json, deleted_at)
+            values (?, ?, ?, ?)
+            """,
+            (
+                item_id,
+                json.dumps(dict(row), ensure_ascii=False),
+                json.dumps(events, ensure_ascii=False),
+                now(),
+            ),
+        )
         conn.execute("delete from items where id = ?", (item_id,))
-    return True
+        conn.execute(
+            """
+            delete from deleted_items
+            where id not in (
+                select id from deleted_items order by id desc limit 20
+            )
+            """
+        )
+        return int(cursor.lastrowid)
+
+
+def restore_deleted_item(deletion_id):
+    with db() as conn:
+        deletion = conn.execute(
+            "select * from deleted_items where id = ?",
+            (deletion_id,),
+        ).fetchone()
+        if not deletion:
+            return {"status": "not_found"}
+        item = json.loads(deletion["item_json"])
+        existing = conn.execute(
+            "select id from items where id = ?",
+            (item["id"],),
+        ).fetchone()
+        if existing:
+            return {"status": "conflict", "message": "Vare-ID-en er allerede i bruk."}
+        tag_id = item.get("tag_id")
+        if tag_id and conn.execute(
+            "select id from items where tag_id = ?",
+            (tag_id,),
+        ).fetchone():
+            return {
+                "status": "conflict",
+                "message": "NFC-taggen er allerede koblet til en annen vare.",
+            }
+        columns = ",".join(BACKUP_ITEM_COLUMNS)
+        placeholders = ",".join("?" for _ in BACKUP_ITEM_COLUMNS)
+        conn.execute(
+            f"insert into items ({columns}) values ({placeholders})",
+            tuple(item.get(column) for column in BACKUP_ITEM_COLUMNS),
+        )
+        for event in json.loads(deletion["events_json"]):
+            conn.execute(
+                """
+                insert into events
+                    (item_id, action, delta, quantity_after, note, created_at)
+                values (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item["id"],
+                    event.get("action") or "updated",
+                    event.get("delta"),
+                    event.get("quantity_after"),
+                    event.get("note") or "",
+                    event.get("created_at") or now(),
+                ),
+            )
+        save_event(
+            conn,
+            item["id"],
+            "deletion_undone",
+            None,
+            item["quantity"],
+        )
+        conn.execute("delete from deleted_items where id = ?", (deletion_id,))
+    return {"status": "restored", "item": get_item(item["id"])}
 
 
 def adjust_opened_item(item_id, delta, note=""):
@@ -4405,6 +4514,12 @@ class Handler(BaseHTTPRequestHandler):
                 if summary["recent"]
                 else "Ingen endringer ennå"
             )
+            deleted_id = (query.get("deleted") or [""])[0]
+            deleted_notice = (
+                deletion_notice(int(deleted_id))
+                if deleted_id.isdigit()
+                else ""
+            )
             current_params = {
                 "q": search,
                 "category": category,
@@ -4479,6 +4594,7 @@ class Handler(BaseHTTPRequestHandler):
                   </a>
                 """
             body = f"""
+              {deleted_notice}
               <h1 class="inventory-title">Mitt lager</h1>
               <section class="dashboard-strip" aria-label="Kort status">
                 <a class="dashboard-stat" href="{all_url}">
@@ -4695,8 +4811,8 @@ class Handler(BaseHTTPRequestHandler):
                     <summary>Flere valg</summary>
                     <div class="danger-zone-content">
                       <p class="muted">Sletting fjerner varen, NFC-koblingen og historikken permanent.</p>
-                      <form method="post" action="item/{item['id']}/delete"
-                            onsubmit="return confirm('Vil du slette varen permanent? Dette kan ikke angres.')">
+                          <form method="post" action="item/{item['id']}/delete"
+                            onsubmit="return confirm('Vil du slette varen? Du får mulighet til å angre etterpå.')">
                         <button class="btn danger">Slett vare</button>
                       </form>
                     </div>
@@ -4922,10 +5038,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.redirect(f"item/{parts[1]}")
                 return
             if len(parts) == 3 and parts[2] == "delete" and parts[1].isdigit():
-                if not delete_item(int(parts[1])):
+                deletion_id = delete_item(int(parts[1]))
+                if not deletion_id:
                     self.send_html("Ikke funnet", "<h1>Ikke funnet</h1>", HTTPStatus.NOT_FOUND)
                     return
-                self.redirect(".")
+                self.redirect(f".?deleted={deletion_id}")
                 return
             if (
                 len(parts) == 4
@@ -4999,6 +5116,30 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 self.redirect(f"item/{item['id']}")
                 return
+
+        if (
+            path.startswith("deleted/")
+            and len(path.split("/")) == 3
+            and path.split("/")[1].isdigit()
+            and path.split("/")[2] == "restore"
+        ):
+            result = restore_deleted_item(int(path.split("/")[1]))
+            if result["status"] == "restored":
+                self.redirect(f"item/{result['item']['id']}")
+                return
+            if result["status"] == "not_found":
+                self.send_html(
+                    "Ikke funnet",
+                    "<h1>Kan ikke angre</h1><p>Den slettede varen finnes ikke lenger.</p>",
+                    HTTPStatus.NOT_FOUND,
+                )
+                return
+            self.send_html(
+                "Kan ikke angre",
+                f"<h1>Kan ikke angre sletting</h1><p>{esc(result.get('message'))}</p>",
+                HTTPStatus.CONFLICT,
+            )
+            return
 
         if path.startswith("api/items/"):
             parts = path.split("/")

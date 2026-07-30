@@ -73,10 +73,10 @@ Hjemmelager skal være en enkel og mobilvennlig Home Assistant-app som:
 
 ### 1.0 – Stabil utgave
 
-- ⬜ Lukke kjente feil og gjennomføre regresjonstest av alle hovedflyter.
-- ⬜ Teste oppgradering uten tap av eksisterende lagerdata.
-- ⬜ Ferdigstille navn, ikon, skjermbilder og enkel presentasjon.
-- ⬜ Publisere en ryddig 1.0-versjon med komplett endringslogg.
+- ✅ Lukke kjente feil og gjennomføre regresjonstest av alle hovedflyter.
+- ✅ Teste oppgradering uten tap av eksisterende lagerdata.
+- ✅ Ferdigstille navn, ikon, skjermbilder og enkel presentasjon.
+- ✅ Publisere en ryddig 1.0-versjon med komplett endringslogg.
 
 ## Ferdig
 

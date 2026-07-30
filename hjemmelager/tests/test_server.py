@@ -49,6 +49,7 @@ class HjemmelagerTests(unittest.TestCase):
     def setUp(self):
         with self.app.db() as conn:
             conn.execute("delete from tag_link_sessions")
+            conn.execute("delete from deleted_items")
             conn.execute("delete from events")
             conn.execute("delete from items")
             conn.execute("delete from locations")
@@ -149,12 +150,13 @@ class HjemmelagerTests(unittest.TestCase):
         )
         self.assertEqual(updated["shopping_enabled"], 0)
 
-    def test_delete_item_removes_tag_session_and_history(self):
+    def test_deleted_item_can_be_restored_with_tag_and_history(self):
         item = self.create_item("Skal slettes")
         self.app.start_tag_link(item["id"])
         self.assertEqual(self.app.touch_tag("delete-test-tag")["status"], "linked")
 
-        self.assertTrue(self.app.delete_item(item["id"]))
+        deletion_id = self.app.delete_item(item["id"])
+        self.assertTrue(deletion_id)
         self.assertIsNone(self.app.get_item(item["id"]))
         with self.app.db() as conn:
             event_count = conn.execute(
@@ -166,6 +168,18 @@ class HjemmelagerTests(unittest.TestCase):
             ).fetchone()["total"]
         self.assertEqual(event_count, 0)
         self.assertEqual(session_count, 0)
+
+        result = self.app.restore_deleted_item(deletion_id)
+        restored = result["item"]
+        self.assertEqual(result["status"], "restored")
+        self.assertEqual(restored["id"], item["id"])
+        self.assertEqual(restored["tag_id"], "delete-test-tag")
+        with self.app.db() as conn:
+            restored_events = conn.execute(
+                "select count(*) as total from events where item_id = ?",
+                (item["id"],),
+            ).fetchone()["total"]
+        self.assertGreaterEqual(restored_events, 3)
 
     def test_backup_contains_inventory_and_history(self):
         item = self.create_item(
@@ -548,6 +562,57 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertIn('id="main-content" tabindex="-1"', content)
         self.assertIn('role="status" aria-live="polite"', content)
         self.assertIn("prefers-reduced-motion", content)
+
+    def test_upgrade_from_early_database_keeps_existing_inventory(self):
+        original_path = self.app.DB_PATH
+        legacy_path = Path(self.temp_dir.name) / "legacy-upgrade.db"
+        try:
+            conn = self.app.sqlite3.connect(legacy_path)
+            try:
+                conn.execute(
+                    """
+                    create table items (
+                        id integer primary key autoincrement,
+                        name text not null,
+                        kind text not null default 'consumable',
+                        quantity real not null default 0,
+                        unit text not null default 'stk',
+                        min_quantity real not null default 0,
+                        location text not null default '',
+                        category text not null default '',
+                        tag_id text unique,
+                        image_url text not null default '',
+                        note text not null default '',
+                        shopping_enabled integer not null default 1,
+                        last_scanned_at integer,
+                        created_at integer not null,
+                        updated_at integer not null
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    insert into items (
+                        name, quantity, unit, min_quantity, location, category,
+                        shopping_enabled, created_at, updated_at
+                    ) values ('Gammel vare', 7, 'stk', 2, 'Bod', 'Test', 1, 1, 1)
+                    """
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            self.app.DB_PATH = legacy_path
+            self.app.init_db()
+
+            item = self.app.list_items()[0]
+
+            self.assertEqual(item["name"], "Gammel vare")
+            self.assertEqual(item["quantity"], 7)
+            self.assertEqual(item["location"], "Bod")
+            self.assertEqual(item["opened_quantity"], 0)
+            self.assertEqual(item["target_quantity"], 0)
+        finally:
+            self.app.DB_PATH = original_path
 
 
 if __name__ == "__main__":

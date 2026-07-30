@@ -37,6 +37,17 @@ Home Assistant krever at et add-on-repository har `repository.yaml` i roten, og 
 
 Lagerforsiden viser antall varer, hva som må kjøpes, varer med nær best før og siste endring. **Historikk** under **Mer** viser hva som har skjedd og åpner varen slik at feil kan rettes.
 
+## Data, eksport og trygg sletting
+
+Alle lagerdata og opplastede bilder lagres lokalt i add-onens dataområde.
+
+- **Last ned sikkerhetskopi** lager en komplett JSON-kopi som kan gjenopprettes senere.
+- **Eksporter lesbar CSV** lager en regnearkfil for kontroll eller videre bruk.
+- Før en sikkerhetskopi gjenopprettes, lagrer Hjemmelager automatisk en kopi av dagens data.
+- Etter sletting vises **Angre sletting**. De 20 siste slettede varene beholdes lokalt som sikkerhetsnett til eldre slettinger skyves ut.
+
+Ta gjerne en sikkerhetskopi før større opprydding eller oppdatering.
+
 ## NFC-flyt
 
 Home Assistant sin mobilapp kan lese NFC-tags. Hjemmelager kobler seg automatisk til Home Assistant ved oppstart og lytter etter `tag_scanned`. Du trenger derfor ikke konfigurere IP-adresse, REST-kommando eller automasjon selv.

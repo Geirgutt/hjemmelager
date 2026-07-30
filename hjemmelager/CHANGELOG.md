@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.0 - Stabil utgave
+
+- Gjorde sletting tryggere: varen, NFC-taggen og historikken kan nå hentes tilbake umiddelbart.
+- La inn eksplisitt oppgraderingstest fra tidlig databasestruktur uten tap av eksisterende varer.
+- Gjennomførte full regresjon av registrering, bilder, NFC, søk, lager, handleliste, backup, historikk og eksport.
+- Ferdigstilte produktnavn, vektorikon, mobilskjermbilde og presentasjon i repoet.
+- Samlet installasjon, førstegangsbruk, feilsøking, oppdatering og datatrygghet i dokumentasjonen.
+- Stabiliserte 1.0 med 36 automatiske tester.
+
 ## 0.9.0 - Profesjonell finish
 
 - Samordnet statusfarger, knapper, overskrifter og kompakte avstander i hele appen.
