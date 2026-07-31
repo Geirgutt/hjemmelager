@@ -255,6 +255,26 @@ class HjemmelagerTests(unittest.TestCase):
         before_payload = json.loads(before_path.read_text(encoding="utf-8"))
         self.assertEqual(before_payload["data"]["items"][0]["name"], "Midlertidig")
 
+    def test_backup_restore_keeps_expiry_batches(self):
+        first = (date.today() + timedelta(days=3)).isoformat()
+        second = (date.today() + timedelta(days=9)).isoformat()
+        item = self.create_item("Melk", quantity="2", best_before=first)
+        self.app.add_expiry_batch(item["id"], 3, second)
+        backup = self.app.create_backup_payload()
+
+        self.app.delete_item(item["id"])
+        self.app.restore_backup_payload(backup)
+        restored = self.app.get_item(item["id"])
+
+        self.assertEqual(restored["quantity"], 5)
+        self.assertEqual(
+            restored["expiry_batches"],
+            [
+                {"best_before": first, "quantity": 2},
+                {"best_before": second, "quantity": 3},
+            ],
+        )
+
     def test_invalid_restore_rolls_back_without_data_loss(self):
         current = self.create_item("Behold meg")
         invalid = self.app.create_backup_payload()
@@ -318,6 +338,114 @@ class HjemmelagerTests(unittest.TestCase):
             [expired["id"], soon["id"]],
         )
         self.assertNotIn(later["id"], [item["id"] for item in filtered])
+
+    def test_expiry_batches_keep_separate_dates_and_use_oldest_first(self):
+        later = (date.today() + timedelta(days=10)).isoformat()
+        sooner = (date.today() + timedelta(days=3)).isoformat()
+        item = self.create_item("Melk", quantity="2", best_before=later)
+
+        item = self.app.add_expiry_batch(item["id"], 3, sooner)
+
+        self.assertEqual(item["quantity"], 5)
+        self.assertEqual(
+            item["expiry_batches"],
+            [
+                {"best_before": sooner, "quantity": 3},
+                {"best_before": later, "quantity": 2},
+            ],
+        )
+        self.assertEqual(item["best_before"], sooner)
+
+        item = self.app.adjust_item(item["id"], -4, "test")
+
+        self.assertEqual(item["quantity"], 1)
+        self.assertEqual(
+            item["expiry_batches"],
+            [{"best_before": later, "quantity": 1}],
+        )
+        self.assertEqual(item["best_before"], later)
+
+    def test_removing_expiry_date_keeps_quantity(self):
+        best_before = (date.today() + timedelta(days=5)).isoformat()
+        item = self.create_item("Yoghurt", quantity="4", best_before=best_before)
+
+        item = self.app.clear_expiry_batch_date(item["id"], best_before)
+
+        self.assertEqual(item["quantity"], 4)
+        self.assertEqual(item["expiry_batches"], [])
+        self.assertEqual(item["undated_quantity"], 4)
+        self.assertEqual(item["best_before"], "")
+
+    def test_existing_undated_stock_can_be_distributed_across_dates(self):
+        first = (date.today() + timedelta(days=4)).isoformat()
+        second = (date.today() + timedelta(days=9)).isoformat()
+        item = self.create_item("Melk", quantity="10")
+
+        self.app.add_expiry_batch(
+            item["id"], 6, first, from_existing=True
+        )
+        item = self.app.add_expiry_batch(
+            item["id"], 4, second, from_existing=True
+        )
+
+        self.assertEqual(item["quantity"], 10)
+        self.assertEqual(item["undated_quantity"], 0)
+        self.assertEqual(
+            item["expiry_batches"],
+            [
+                {"best_before": first, "quantity": 6},
+                {"best_before": second, "quantity": 4},
+            ],
+        )
+        with self.assertRaisesRegex(ValueError, "mangler dato"):
+            self.app.add_expiry_batch(
+                item["id"], 1, second, from_existing=True
+            )
+
+    def test_editing_item_preserves_multiple_expiry_batches(self):
+        first = (date.today() + timedelta(days=2)).isoformat()
+        second = (date.today() + timedelta(days=8)).isoformat()
+        item = self.create_item("Fløte", quantity="2", best_before=first)
+        self.app.add_expiry_batch(item["id"], 3, second)
+
+        updated = self.app.update_item(
+            item["id"],
+            {
+                "name": "Kremfløte",
+                "quantity": "5",
+                "kind": "consumable",
+                "unit": "stk",
+                "shopping_enabled": "1",
+            },
+        )
+
+        self.assertEqual(updated["name"], "Kremfløte")
+        self.assertEqual(len(updated["expiry_batches"]), 2)
+        self.assertEqual(updated["best_before"], first)
+
+    def test_undo_restores_consumed_expiry_batch(self):
+        best_before = (date.today() + timedelta(days=4)).isoformat()
+        item = self.create_item("Kefir", quantity="3", best_before=best_before)
+        self.app.adjust_item(item["id"], -2, "test")
+
+        result = self.app.undo_last_adjustment(item["id"])
+
+        self.assertEqual(result["item"]["quantity"], 3)
+        self.assertEqual(
+            result["item"]["expiry_batches"],
+            [{"best_before": best_before, "quantity": 3}],
+        )
+
+    def test_expiry_panel_explains_batches_and_date_removal(self):
+        best_before = (date.today() + timedelta(days=6)).isoformat()
+        item = self.create_item("Rømme", quantity="2", best_before=best_before)
+
+        content = self.app.expiry_batches_panel(item)
+
+        self.assertIn("Holdbarhetspartier", content)
+        self.assertIn("Legg til parti", content)
+        self.assertIn("Fjern dato", content)
+        self.assertIn("Finnes allerede i totalen", content)
 
     def test_empty_states_offer_a_clear_next_step(self):
         consumable = self.app.inventory_empty_state("consumable")
@@ -601,6 +729,8 @@ class HjemmelagerTests(unittest.TestCase):
 
         self.assertIn('class="skip-link"', content)
         self.assertIn('id="main-content" tabindex="-1"', content)
+        self.assertIn('class="app-version"', content)
+        self.assertIn('aria-label="Versjon 1.1.0"', content)
         self.assertIn('role="status" aria-live="polite"', content)
         self.assertIn("prefers-reduced-motion", content)
 

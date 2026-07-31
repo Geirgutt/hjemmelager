@@ -37,6 +37,14 @@ Home Assistant krever at et add-on-repository har `repository.yaml` i roten, og 
 
 Lagerforsiden viser antall varer, hva som må kjøpes, varer med nær best før og siste endring. **Historikk** under **Mer** viser hva som har skjedd og åpner varen slik at feil kan rettes.
 
+## Antall og holdbarhetspartier
+
+På varesiden kan beholdningen endres med **Fjern 1**, **Legg til 1**, **Legg til 5**, **Legg til 10** eller et eget tall. Eget tall kan også være negativt, for eksempel `-3`.
+
+Forbruksvarer kan ha flere holdbarhetspartier. Et parti består av et antall og en best før-dato, for eksempel 6 melk med én dato og 4 med en annen. Ved **Legg til parti** velger du om antallet skal legges til totalbeholdningen, eller om det allerede finnes i totalen og bare skal få en dato. Når beholdningen reduseres, trekkes varer automatisk fra partiet med tidligst dato først.
+
+**Fjern dato** gjør partiet udatert, men beholder antallet i lageret. Eksisterende varer som hadde én holdbarhetsdato før oppgraderingen, blir automatisk gjort om til ett parti med samme antall og dato.
+
 ## Data, eksport og trygg sletting
 
 Alle lagerdata og opplastede bilder lagres lokalt i add-onens dataområde.

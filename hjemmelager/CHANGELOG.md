@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.1.0 - Partier og antall
+
+- La til raske lagerknapper for `+5` og `+10`, samt et eget felt for valgfri positiv eller negativ endring.
+- Støtter flere holdbarhetspartier med hvert sitt antall og best før-dato på samme vare.
+- Bruker automatisk partiet med tidligst dato når beholdningen reduseres.
+- Gjør det mulig å fjerne en holdbarhetsdato uten å fjerne antallet fra lageret.
+- Migrerer eksisterende varer med én holdbarhetsdato til ett parti automatisk.
+
+## 1.0.5 - Synlig versjon
+
+- Viser appversjonen som en liten merkelapp ved Hjemmelager-navnet i toppfeltet, også på mobil.
+
 ## 1.0.4 - Riktig panelsti
 
 - Bygger NFC-direktelenken fra den faktiske panelstien som er åpen i Home Assistant, i stedet for å anta en Ingress-adresse fra add-on-navnet.

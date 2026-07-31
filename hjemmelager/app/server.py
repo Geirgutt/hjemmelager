@@ -26,8 +26,8 @@ except ImportError:
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "1.0.4"
-APP_CODENAME = "Riktig panelsti"
+APP_VERSION = "1.1.0"
+APP_CODENAME = "Partier og antall"
 TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
@@ -55,6 +55,7 @@ BACKUP_ITEM_COLUMNS = (
     "target_quantity",
     "price",
     "best_before",
+    "expiry_batches_json",
     "location",
     "category",
     "tag_id",
@@ -298,6 +299,7 @@ def init_db():
                 target_quantity real not null default 0,
                 price real not null default 0,
                 best_before text not null default '',
+                expiry_batches_json text not null default '[]',
                 location text not null default '',
                 category text not null default '',
                 tag_id text unique,
@@ -366,6 +368,26 @@ def init_db():
             conn.execute("alter table items add column target_quantity real not null default 0")
         if "best_before" not in columns:
             conn.execute("alter table items add column best_before text not null default ''")
+        if "expiry_batches_json" not in columns:
+            conn.execute("alter table items add column expiry_batches_json text not null default '[]'")
+        legacy_expiry_rows = conn.execute(
+            """
+            select id, quantity, best_before, expiry_batches_json
+            from items
+            where best_before != ''
+            """
+        ).fetchall()
+        for row in legacy_expiry_rows:
+            if parse_expiry_batches(row["expiry_batches_json"]):
+                continue
+            quantity = max(0, float(row["quantity"] or 0))
+            if quantity <= 0:
+                continue
+            batches = [{"best_before": row["best_before"], "quantity": quantity}]
+            conn.execute(
+                "update items set expiry_batches_json = ? where id = ?",
+                (serialize_expiry_batches(batches), row["id"]),
+            )
         if "shopping_checked" not in columns:
             conn.execute("alter table items add column shopping_checked integer not null default 0")
         for table, column in (("locations", "location"), ("categories", "category")):
@@ -379,8 +401,69 @@ def init_db():
                 )
 
 
+def parse_expiry_batches(value):
+    if isinstance(value, list):
+        raw_batches = value
+    else:
+        try:
+            raw_batches = json.loads(value or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw_batches = []
+    combined = {}
+    for batch in raw_batches if isinstance(raw_batches, list) else []:
+        if not isinstance(batch, dict):
+            continue
+        best_before = str(batch.get("best_before") or "").strip()
+        quantity = max(0, parse_float(batch.get("quantity")))
+        try:
+            date.fromisoformat(best_before)
+        except ValueError:
+            continue
+        if quantity > 0:
+            combined[best_before] = combined.get(best_before, 0) + quantity
+    return [
+        {"best_before": best_before, "quantity": quantity}
+        for best_before, quantity in sorted(combined.items())
+    ]
+
+
+def serialize_expiry_batches(batches):
+    return json.dumps(parse_expiry_batches(batches), ensure_ascii=False, separators=(",", ":"))
+
+
+def earliest_best_before(batches):
+    parsed = parse_expiry_batches(batches)
+    return parsed[0]["best_before"] if parsed else ""
+
+
+def consume_expiry_batches(batches, quantity):
+    remaining = max(0, float(quantity or 0))
+    kept = []
+    consumed = []
+    for batch in parse_expiry_batches(batches):
+        take = min(float(batch["quantity"]), remaining)
+        if take > 0:
+            consumed.append({"best_before": batch["best_before"], "quantity": take})
+            remaining -= take
+        left = float(batch["quantity"]) - take
+        if left > 0:
+            kept.append({"best_before": batch["best_before"], "quantity": left})
+    return kept, consumed
+
+
+def merge_expiry_batches(batches, additions):
+    return parse_expiry_batches(parse_expiry_batches(batches) + parse_expiry_batches(additions))
+
+
 def row_to_item(row):
     item = dict(row)
+    item["expiry_batches"] = parse_expiry_batches(item.get("expiry_batches_json"))
+    item["dated_quantity"] = sum(
+        float(batch["quantity"]) for batch in item["expiry_batches"]
+    )
+    item["undated_quantity"] = max(
+        0, float(item["quantity"] or 0) - item["dated_quantity"]
+    )
     item["is_low"] = (
         item["kind"] == "consumable"
         and item["shopping_enabled"] == 1
@@ -465,6 +548,8 @@ EVENT_LABELS = {
     "adjustment_undone": "lagerendring angret",
     "opened_adjusted": "åpent antall endret",
     "package_opened": "pakke åpnet",
+    "expiry_batch_added": "holdbarhetsparti lagt til",
+    "expiry_date_removed": "holdbarhetsdato fjernet",
     "tag_linked": "NFC-tag koblet",
     "tag_unlinked": "NFC-tag fjernet",
     "deletion_undone": "sletting angret",
@@ -622,6 +707,7 @@ def restore_backup_payload(payload):
         "target_quantity": 0,
         "price": 0,
         "best_before": "",
+        "expiry_batches_json": "[]",
         "location": "",
         "category": "",
         "tag_id": None,
@@ -668,6 +754,22 @@ def restore_backup_payload(payload):
                     values.append(row.get("id"))
                 elif column == "name":
                     values.append(str(row.get("name") or "").strip())
+                elif column == "expiry_batches_json":
+                    restored_batches = row.get("expiry_batches_json")
+                    if restored_batches is None:
+                        restored_best_before = str(row.get("best_before") or "").strip()
+                        restored_quantity = max(0, parse_float(row.get("quantity")))
+                        restored_batches = serialize_expiry_batches(
+                            [
+                                {
+                                    "best_before": restored_best_before,
+                                    "quantity": restored_quantity,
+                                }
+                            ]
+                            if restored_best_before and restored_quantity > 0
+                            else []
+                        )
+                    values.append(restored_batches)
                 else:
                     values.append(row.get(column, defaults.get(column)))
             conn.execute(
@@ -1028,6 +1130,12 @@ def create_item(data):
     tag_id = (data.get("tag_id") or "").strip() or None
     barcode = (data.get("barcode") or "").strip()
     quantity = parse_float(data.get("quantity"))
+    best_before = (data.get("best_before") or "").strip()
+    expiry_batches = (
+        [{"best_before": best_before, "quantity": quantity}]
+        if best_before and quantity > 0
+        else []
+    )
     opened_quantity = parse_float(data.get("opened_quantity"))
     location = registry_value(data, "location")
     category = registry_value(data, "category")
@@ -1037,9 +1145,9 @@ def create_item(data):
         cur = conn.execute(
             """
             insert into items (
-                name, kind, quantity, opened_quantity, unit, min_quantity, target_quantity, price, best_before,
+                name, kind, quantity, opened_quantity, unit, min_quantity, target_quantity, price, best_before, expiry_batches_json,
                 location, category, tag_id, barcode, image_url, note, shopping_enabled, created_at, updated_at
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 (data.get("name") or "Uten navn").strip(),
@@ -1050,7 +1158,8 @@ def create_item(data):
                 parse_float(data.get("min_quantity")),
                 parse_float(data.get("target_quantity")),
                 parse_float(data.get("price")),
-                (data.get("best_before") or "").strip(),
+                best_before,
+                serialize_expiry_batches(expiry_batches),
                 location,
                 category,
                 tag_id,
@@ -1106,6 +1215,23 @@ def update_item(item_id, data):
     barcode = (data.get("barcode") or "").strip()
     location = registry_value(data, "location")
     category = registry_value(data, "category")
+    previous_quantity = float(existing["quantity"] or 0)
+    quantity = max(0, parse_float(data.get("quantity"), previous_quantity))
+    expiry_batches = existing["expiry_batches"]
+    if "best_before" in data:
+        submitted_best_before = (data.get("best_before") or "").strip()
+        expiry_batches = (
+            [{"best_before": submitted_best_before, "quantity": quantity}]
+            if submitted_best_before and quantity > 0
+            else []
+        )
+    elif quantity < previous_quantity:
+        expiry_batches, _ = consume_expiry_batches(
+            expiry_batches, previous_quantity - quantity
+        )
+    if (data.get("kind") or existing["kind"]) != "consumable":
+        expiry_batches = []
+    best_before = earliest_best_before(expiry_batches)
     with db() as conn:
         save_registry_value(conn, "locations", location)
         save_registry_value(conn, "categories", category)
@@ -1113,7 +1239,7 @@ def update_item(item_id, data):
             """
             update items set
                 name = ?, kind = ?, quantity = ?, opened_quantity = ?, unit = ?, min_quantity = ?, target_quantity = ?,
-                price = ?, best_before = ?,
+                price = ?, best_before = ?, expiry_batches_json = ?,
                 location = ?, category = ?, tag_id = ?, barcode = ?, image_url = ?, note = ?,
                 shopping_enabled = ?, shopping_checked = 0, updated_at = ?
             where id = ?
@@ -1121,13 +1247,14 @@ def update_item(item_id, data):
             (
                 (data.get("name") or existing["name"]).strip(),
                 data.get("kind") or existing["kind"],
-                parse_float(data.get("quantity"), existing["quantity"]),
+                quantity,
                 parse_float(data.get("opened_quantity"), existing["opened_quantity"]),
                 (data.get("unit") or existing["unit"]).strip(),
                 parse_float(data.get("min_quantity"), existing["min_quantity"]),
                 parse_float(data.get("target_quantity"), existing["target_quantity"]),
                 parse_float(data.get("price"), existing["price"]),
-                (data.get("best_before") or "").strip(),
+                best_before,
+                serialize_expiry_batches(expiry_batches),
                 location,
                 category,
                 tag_id,
@@ -1139,7 +1266,7 @@ def update_item(item_id, data):
                 item_id,
             ),
         )
-        save_event(conn, item_id, "updated", None, parse_float(data.get("quantity"), existing["quantity"]))
+        save_event(conn, item_id, "updated", None, quantity)
     return get_item(item_id)
 
 
@@ -1148,18 +1275,145 @@ def adjust_item(item_id, delta, note=""):
         row = conn.execute("select * from items where id = ?", (item_id,)).fetchone()
         if not row:
             return None
-        quantity = max(0, float(row["quantity"]) + float(delta))
+        previous_quantity = float(row["quantity"])
+        quantity = max(0, previous_quantity + float(delta))
+        actual_delta = quantity - previous_quantity
+        expiry_batches = parse_expiry_batches(row["expiry_batches_json"])
+        consumed = []
+        if actual_delta < 0:
+            expiry_batches, consumed = consume_expiry_batches(
+                expiry_batches, -actual_delta
+            )
+        event_note = note
+        if consumed:
+            event_note = json.dumps(
+                {"source": note, "consumed_expiry_batches": consumed},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
         conn.execute(
             """
             update items
             set quantity = ?,
+                best_before = ?,
+                expiry_batches_json = ?,
                 shopping_checked = case when ? > 0 then 0 else shopping_checked end,
                 updated_at = ?
             where id = ?
             """,
-            (quantity, float(delta), now(), item_id),
+            (
+                quantity,
+                earliest_best_before(expiry_batches),
+                serialize_expiry_batches(expiry_batches),
+                actual_delta,
+                now(),
+                item_id,
+            ),
         )
-        save_event(conn, item_id, "adjusted", delta, quantity, note)
+        save_event(conn, item_id, "adjusted", actual_delta, quantity, event_note)
+    return get_item(item_id)
+
+
+def add_expiry_batch(
+    item_id,
+    quantity,
+    best_before,
+    note="web",
+    from_existing=False,
+):
+    quantity = parse_float(quantity)
+    best_before = str(best_before or "").strip()
+    if quantity <= 0:
+        raise ValueError("Antallet må være større enn null")
+    try:
+        date.fromisoformat(best_before)
+    except ValueError as exc:
+        raise ValueError("Velg en gyldig holdbarhetsdato") from exc
+    with db() as conn:
+        row = conn.execute("select * from items where id = ?", (item_id,)).fetchone()
+        if not row:
+            return None
+        if row["kind"] != "consumable":
+            raise ValueError("Holdbarhetspartier kan bare brukes på forbruksvarer")
+        existing_batches = parse_expiry_batches(row["expiry_batches_json"])
+        if from_existing:
+            dated_quantity = sum(float(batch["quantity"]) for batch in existing_batches)
+            undated_quantity = max(0, float(row["quantity"] or 0) - dated_quantity)
+            if quantity > undated_quantity + 0.000001:
+                raise ValueError(
+                    f"Bare {fmt_num(undated_quantity)} {row['unit']} mangler dato"
+                )
+        batches = merge_expiry_batches(
+            existing_batches,
+            [{"best_before": best_before, "quantity": quantity}],
+        )
+        new_quantity = float(row["quantity"] or 0)
+        if not from_existing:
+            new_quantity += quantity
+        conn.execute(
+            """
+            update items
+            set quantity = ?, best_before = ?, expiry_batches_json = ?,
+                shopping_checked = 0, updated_at = ?
+            where id = ?
+            """,
+            (
+                new_quantity,
+                earliest_best_before(batches),
+                serialize_expiry_batches(batches),
+                now(),
+                item_id,
+            ),
+        )
+        save_event(
+            conn,
+            item_id,
+            "expiry_batch_added",
+            0 if from_existing else quantity,
+            new_quantity,
+            (
+                f"{best_before}:existing"
+                if from_existing
+                else best_before
+            )
+            if note == "web"
+            else f"{note}:{best_before}",
+        )
+    return get_item(item_id)
+
+
+def clear_expiry_batch_date(item_id, best_before, note="web"):
+    best_before = str(best_before or "").strip()
+    with db() as conn:
+        row = conn.execute("select * from items where id = ?", (item_id,)).fetchone()
+        if not row:
+            return None
+        batches = [
+            batch
+            for batch in parse_expiry_batches(row["expiry_batches_json"])
+            if batch["best_before"] != best_before
+        ]
+        conn.execute(
+            """
+            update items
+            set best_before = ?, expiry_batches_json = ?, updated_at = ?
+            where id = ?
+            """,
+            (
+                earliest_best_before(batches),
+                serialize_expiry_batches(batches),
+                now(),
+                item_id,
+            ),
+        )
+        save_event(
+            conn,
+            item_id,
+            "expiry_date_removed",
+            None,
+            row["quantity"],
+            best_before if note == "web" else f"{note}:{best_before}",
+        )
     return get_item(item_id)
 
 
@@ -1189,9 +1443,29 @@ def undo_last_adjustment(item_id, max_age_seconds=600):
             0,
             float(event["quantity_after"] or 0) - float(event["delta"]),
         )
+        expiry_batches = parse_expiry_batches(item["expiry_batches_json"])
+        try:
+            event_note = json.loads(event["note"] or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            event_note = {}
+        if isinstance(event_note, dict):
+            expiry_batches = merge_expiry_batches(
+                expiry_batches,
+                event_note.get("consumed_expiry_batches") or [],
+            )
         conn.execute(
-            "update items set quantity = ?, updated_at = ? where id = ?",
-            (previous_quantity, timestamp, item_id),
+            """
+            update items
+            set quantity = ?, best_before = ?, expiry_batches_json = ?, updated_at = ?
+            where id = ?
+            """,
+            (
+                previous_quantity,
+                earliest_best_before(expiry_batches),
+                serialize_expiry_batches(expiry_batches),
+                timestamp,
+                item_id,
+            ),
         )
         save_event(
             conn,
@@ -1339,9 +1613,26 @@ def restore_deleted_item(deletion_id):
             }
         columns = ",".join(BACKUP_ITEM_COLUMNS)
         placeholders = ",".join("?" for _ in BACKUP_ITEM_COLUMNS)
+        restored_expiry_batches = item.get("expiry_batches_json")
+        if restored_expiry_batches is None:
+            restored_expiry_batches = serialize_expiry_batches(
+                [
+                    {
+                        "best_before": item.get("best_before"),
+                        "quantity": item.get("quantity"),
+                    }
+                ]
+                if item.get("best_before") and float(item.get("quantity") or 0) > 0
+                else []
+            )
         conn.execute(
             f"insert into items ({columns}) values ({placeholders})",
-            tuple(item.get(column) for column in BACKUP_ITEM_COLUMNS),
+            tuple(
+                restored_expiry_batches
+                if column == "expiry_batches_json"
+                else item.get(column)
+                for column in BACKUP_ITEM_COLUMNS
+            ),
         )
         for event in json.loads(deletion["events_json"]):
             conn.execute(
@@ -1389,13 +1680,30 @@ def open_package(item_id, note=""):
         row = conn.execute("select * from items where id = ?", (item_id,)).fetchone()
         if not row:
             return None
-        quantity = max(0, float(row["quantity"]) - 1)
-        opened_quantity = float(row["opened_quantity"]) + 1
+        previous_quantity = float(row["quantity"])
+        quantity = max(0, previous_quantity - 1)
+        actual_delta = quantity - previous_quantity
+        opened_quantity = float(row["opened_quantity"]) - actual_delta
+        expiry_batches = parse_expiry_batches(row["expiry_batches_json"])
+        if actual_delta < 0:
+            expiry_batches, _ = consume_expiry_batches(expiry_batches, -actual_delta)
         conn.execute(
-            "update items set quantity = ?, opened_quantity = ?, updated_at = ? where id = ?",
-            (quantity, opened_quantity, now(), item_id),
+            """
+            update items
+            set quantity = ?, opened_quantity = ?, best_before = ?,
+                expiry_batches_json = ?, updated_at = ?
+            where id = ?
+            """,
+            (
+                quantity,
+                opened_quantity,
+                earliest_best_before(expiry_batches),
+                serialize_expiry_batches(expiry_batches),
+                now(),
+                item_id,
+            ),
         )
-        save_event(conn, item_id, "package_opened", -1, quantity, note)
+        save_event(conn, item_id, "package_opened", actual_delta, quantity, note)
     return get_item(item_id)
 
 
@@ -1788,6 +2096,23 @@ def page(title, body, base_path=""):
       color: var(--text);
       text-decoration: none;
       letter-spacing: -.02em;
+    }}
+    .brand-lockup {{
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      min-width: 0;
+    }}
+    .app-version {{
+      padding: 1px 6px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: .68rem;
+      font-weight: 700;
+      letter-spacing: .01em;
+      line-height: 1.45;
+      white-space: nowrap;
     }}
     nav {{
       display: flex;
@@ -2530,6 +2855,44 @@ def page(title, body, base_path=""):
     }}
     .qty {{ font-size: 2rem; font-weight: 800; margin: 8px 0; }}
     .actions {{ display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }}
+    .quantity-custom {{
+      display: flex;
+      align-items: end;
+      gap: 6px;
+      flex: 1 1 210px;
+    }}
+    .quantity-custom label {{
+      flex: 1 1 110px;
+      font-size: .82rem;
+    }}
+    .quantity-custom input {{
+      min-width: 92px;
+      padding: 8px 9px;
+    }}
+    .expiry-panel {{
+      margin-top: 18px;
+      padding-top: 16px;
+      border-top: 1px solid var(--line);
+    }}
+    .expiry-panel h2 {{ margin: 0 0 4px; font-size: 1rem; }}
+    .expiry-batch-list {{ display: grid; gap: 6px; margin-top: 10px; }}
+    .expiry-batch-row {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      min-height: 40px;
+      padding: 7px 9px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+    }}
+    .expiry-add-form {{
+      display: grid;
+      grid-template-columns: minmax(100px, .7fr) minmax(150px, 1fr) minmax(165px, 1fr) auto;
+      align-items: end;
+      gap: 8px;
+      margin-top: 12px;
+    }}
     form.stack, .stack {{ display: grid; gap: 12px; }}
     label {{ display: grid; gap: 5px; font-weight: 650; }}
     input, select, textarea {{
@@ -2923,6 +3286,8 @@ def page(title, body, base_path=""):
         grid-template-columns: minmax(0, 1fr) auto;
         grid-column: 1 / -1;
       }}
+      .expiry-add-form {{ grid-template-columns: 1fr 1fr; }}
+      .expiry-add-form .btn {{ grid-column: 1 / -1; }}
       .search-row .btn {{
         min-height: 44px;
       }}
@@ -3183,7 +3548,10 @@ def page(title, body, base_path=""):
   <a class="skip-link" href="#main-content">Hopp til innhold</a>
   <header>
     <div class="bar">
-      <a class="brand" href=".">{APP_NAME}</a>
+      <div class="brand-lockup">
+        <a class="brand" href=".">{APP_NAME}</a>
+        <span class="app-version" aria-label="Versjon {APP_VERSION}">v{APP_VERSION}</span>
+      </div>
       <nav>
         <a class="{nav_class("items")}" href=".">Varer</a>
         <a class="{nav_class("scan")}" href="scan">Scan</a>
@@ -3281,6 +3649,59 @@ def item_badges(item, low_label="Kjøp inn"):
     elif item["expires_soon"]:
         badges.append('<span class="pill expires-soon">Utløper snart</span>')
     return f'<span class="item-badges">{"".join(badges)}</span>' if badges else ""
+
+
+def display_date(value):
+    try:
+        return date.fromisoformat(str(value)).strftime("%d.%m.%Y")
+    except ValueError:
+        return str(value or "")
+
+
+def expiry_batches_panel(item):
+    if item["kind"] != "consumable":
+        return ""
+    rows = []
+    for batch in item["expiry_batches"]:
+        rows.append(
+            f"""
+              <div class="expiry-batch-row">
+                <span><strong>{fmt_num(batch['quantity'])} {esc(item['unit'])}</strong> · best før {esc(display_date(batch['best_before']))}</span>
+                <form method="post" action="item/{item['id']}/expiry/clear">
+                  <input type="hidden" name="best_before" value="{esc(batch['best_before'])}">
+                  <button class="btn" title="Behold antallet, men fjern datoen">Fjern dato</button>
+                </form>
+              </div>
+            """
+        )
+    if float(item["undated_quantity"] or 0) > 0:
+        rows.append(
+            f'<div class="expiry-batch-row muted"><span><strong>{fmt_num(item["undated_quantity"])} {esc(item["unit"])}</strong> uten dato</span></div>'
+        )
+    rows_html = "".join(rows) or '<p class="muted">Ingen beholdning har holdbarhetsdato ennå.</p>'
+    return f"""
+      <section class="expiry-panel">
+        <h2>Holdbarhetspartier</h2>
+        <p class="muted">Når du fjerner varer, brukes partiet med tidligst dato først.</p>
+        <div class="expiry-batch-list">{rows_html}</div>
+        <form class="expiry-add-form" method="post" action="item/{item['id']}/expiry/add">
+          <label>Antall i nytt parti
+            <input name="quantity" type="number" min="0.01" step="0.01" inputmode="decimal" required placeholder="For eksempel 5">
+          </label>
+          <label>Best før
+            <input name="best_before" type="date" required>
+          </label>
+          <label>Antallet
+            <select name="source">
+              <option value="new">Legg til i totalen</option>
+              <option value="existing">Finnes allerede i totalen</option>
+            </select>
+          </label>
+          <button class="btn primary">Legg til parti</button>
+        </form>
+        <p class="field-help">Velg «finnes allerede» når du bare fordeler udatert beholdning på datoer.</p>
+      </section>
+    """
 
 
 def item_card(item):
@@ -3608,6 +4029,20 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
         if is_new
         else ""
     )
+    expiry_field = (
+        f"""
+          <label class="full">Holdbarhetsdato
+            <input name="best_before" type="date" value="{esc(item['best_before'])}">
+            <span class="field-help">Hele startantallet får denne datoen. Flere partier kan legges til fra varesiden.</span>
+          </label>
+        """
+        if is_new
+        else """
+          <div class="full field-help">
+            Holdbarhetsdatoer og partier administreres fra varesiden.
+          </div>
+        """
+    )
     return f"""
     <form class="stack" method="post" action="{action}" enctype="multipart/form-data">
       <section class="card form-card">
@@ -3655,9 +4090,7 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
             <label>Pris
               <input name="price" type="number" step="0.01" value="{esc(fmt_price(item['price']))}" placeholder="Valgfritt">
             </label>
-            <label class="full">Holdbarhetsdato
-              <input name="best_before" type="date" value="{esc(item['best_before'])}">
-            </label>
+            {expiry_field}
             <label class="full">
               <input type="hidden" name="shopping_enabled" value="0">
               <span><input type="checkbox" name="shopping_enabled" value="1" {checked}> Legg på handlelisten når beholdningen blir lav</span>
@@ -4954,7 +5387,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 stock_details = (
                     f"""
-                      <p class="muted">Pris: {esc(price_text)} · Holdbarhetsdato: {esc(best_before_text)}</p>
+                      <p class="muted">Pris: {esc(price_text)} · Tidligste best før: {esc(best_before_text)}</p>
                       <p class="muted">Varsle ved: {fmt_num(item["min_quantity"])} · Fyll opp til: {
                           fmt_num(item["target_quantity"])
                           if float(item["target_quantity"] or 0) > 0
@@ -4981,6 +5414,7 @@ class Handler(BaseHTTPRequestHandler):
                     if is_consumable
                     else ""
                 )
+                expiry_panel = expiry_batches_panel(item)
                 tag_action_label = "Bytt NFC-tag" if item["tag_id"] else "Koble NFC-tag"
                 shopping_toggle = (
                     f"""
@@ -5041,6 +5475,14 @@ class Handler(BaseHTTPRequestHandler):
                     <div class="actions">
                       <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn">Fjern 1</button></form>
                       <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="1"><button class="btn primary">Legg til 1</button></form>
+                      <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="5"><button class="btn">Legg til 5</button></form>
+                      <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="10"><button class="btn">Legg til 10</button></form>
+                      <form class="quantity-custom" method="post" action="item/{item['id']}/adjust">
+                        <label>Eget antall
+                          <input name="delta" type="number" step="0.01" inputmode="decimal" required placeholder="15 eller -3">
+                        </label>
+                        <button class="btn">Endre</button>
+                      </form>
                       {consumable_actions}
                       <form method="post" action="item/{item['id']}/tag-link/start">
                         <button class="btn">{tag_action_label}</button>
@@ -5049,6 +5491,7 @@ class Handler(BaseHTTPRequestHandler):
                       {shopping_toggle}
                       <a class="btn" href="item/{item['id']}/edit">Rediger</a>
                     </div>
+                    {expiry_panel}
                   </div>
                   <details class="card danger-zone">
                     <summary>Flere valg</summary>
@@ -5320,6 +5763,42 @@ class Handler(BaseHTTPRequestHandler):
                 and parts[1].isdigit()
             ):
                 cancel_tag_link(int(parts[1]))
+                self.redirect(f"item/{parts[1]}")
+                return
+            if (
+                len(parts) == 4
+                and parts[2] == "expiry"
+                and parts[1].isdigit()
+                and parts[3] in ("add", "clear")
+            ):
+                try:
+                    if parts[3] == "add":
+                        item = add_expiry_batch(
+                            int(parts[1]),
+                            data.get("quantity"),
+                            data.get("best_before"),
+                            from_existing=data.get("source") == "existing",
+                        )
+                    else:
+                        item = clear_expiry_batch_date(
+                            int(parts[1]), data.get("best_before")
+                        )
+                except ValueError as exc:
+                    self.send_html(
+                        "Kunne ikke endre holdbarhet",
+                        f"""
+                          <section class="card stack">
+                            <h1>Kunne ikke endre holdbarhet</h1>
+                            <p>{esc(exc)}</p>
+                            <a class="btn" href="item/{parts[1]}">Tilbake til varen</a>
+                          </section>
+                        """,
+                        HTTPStatus.BAD_REQUEST,
+                    )
+                    return
+                if not item:
+                    self.send_html("Ikke funnet", "<h1>Ikke funnet</h1>", HTTPStatus.NOT_FOUND)
+                    return
                 self.redirect(f"item/{parts[1]}")
                 return
             if len(parts) == 3 and parts[2] == "adjust" and parts[1].isdigit():
