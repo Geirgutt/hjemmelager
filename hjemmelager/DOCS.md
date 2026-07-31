@@ -68,6 +68,8 @@ Home Assistant skriver først en vanlig tagg-URL som bare melder fra om at tagge
 
 På iPhone kan Home Assistant-appen koble taggen, men den kan ikke skrive direkteåpningslenken. Kopier derfor **iPhone-lenken** til en NFC-skriverapp og skriv den som URL på taggen. Når NFC-varselet vises, trykker du **Åpne i Home Assistant**. På Android kan nettleseren skrive taggen direkte når den støtter Web NFC; ellers kopierer du Android-lenken til en NFC-skriverapp. Knappen **Test i Home Assistant** tester selve appåpningen; iPhone-lenken skal bare brukes på NFC-taggen, ikke åpnes i nettleseren.
 
+Direkteåpningssiden leser den faktiske panelstien fra Home Assistant mens Hjemmelager er åpent. Dermed brukes samme sti som allerede virker på den aktuelle installasjonen, også når Home Assistant har gitt Ingress-panelet en annen adresse enn add-on-navnet skulle tilsi.
+
 I add-onens logg skal det stå **Home Assistant NFC-lytter er tilkoblet og klar**. Den tidligere manuelle `rest_command`-automasjonen kan fjernes når denne meldingen vises.
 
 ## Strekkode og QR

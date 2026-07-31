@@ -26,8 +26,8 @@ except ImportError:
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "1.0.3"
-APP_CODENAME = "Trygg åpning"
+APP_VERSION = "1.0.4"
+APP_CODENAME = "Riktig panelsti"
 TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
@@ -4010,6 +4010,7 @@ def tag_open_setup_page(item, addon_slug=None):
 
     android_url = esc(links["android"])
     iphone_url = esc(links["iphone"])
+    tag_id_json = json.dumps(str(item.get("tag_id") or ""), ensure_ascii=False)
     return f"""
       <section class="stack">
         <div class="page-heading">
@@ -4024,8 +4025,8 @@ def tag_open_setup_page(item, addon_slug=None):
           <p>Trykk knappen og hold telefonen mot NFC-taggen. Dette skriver en ny lenke på taggen; koblingen til varen i Hjemmelager beholdes.</p>
           <div class="actions">
             <button class="btn primary" id="write-android-tag" type="button">Skriv taggen</button>
-            <button class="btn" type="button" data-copy-url="{android_url}">Kopier Android-lenken</button>
-            <a class="btn" href="{android_url}">Test i Home Assistant</a>
+            <button class="btn" id="copy-android-url" type="button" data-copy-url="{android_url}">Kopier Android-lenken</button>
+            <a class="btn" id="test-android-url" href="{android_url}">Test i Home Assistant</a>
           </div>
           <p class="muted" id="nfc-write-status" role="status"></p>
         </div>
@@ -4033,16 +4034,42 @@ def tag_open_setup_page(item, addon_slug=None):
           <h2>iPhone</h2>
           <p>Home Assistant-appen kan koble taggen, men kan ikke skrive denne direkteåpningslenken. Kopier iPhone-lenken og skriv den som en URL med en NFC-skriverapp. Når NFC-varselet vises, trykker du «Åpne i Home Assistant».</p>
           <div class="actions">
-            <button class="btn primary" type="button" data-copy-url="{iphone_url}">Kopier iPhone-lenken</button>
-            <a class="btn" href="{android_url}">Test i Home Assistant</a>
+            <button class="btn primary" id="copy-iphone-url" type="button" data-copy-url="{iphone_url}">Kopier iPhone-lenken</button>
+            <a class="btn" id="test-iphone-url" href="{android_url}">Test i Home Assistant</a>
           </div>
           <p class="muted">«Test i Home Assistant» tester selve appåpningen. iPhone-lenken over er kun laget for å ligge på NFC-taggen, og skal ikke åpnes i nettleseren.</p>
         </div>
+        <p class="muted" id="nfc-panel-path" role="status"></p>
       </section>
       <script>
-        const androidNfcUrl = {links["android"]!r};
+        const directTagId = {tag_id_json};
+        let androidNfcUrl = {links["android"]!r};
+        let iphoneNfcUrl = {links["iphone"]!r};
         const writeButton = document.getElementById("write-android-tag");
         const writeStatus = document.getElementById("nfc-write-status");
+        const panelPathStatus = document.getElementById("nfc-panel-path");
+
+        function useCurrentHomeAssistantPanelPath() {{
+          try {{
+            const panelPath = window.top.location.pathname || "";
+            if (!panelPath || panelPath.startsWith("/api/hassio_ingress/")) return;
+            androidNfcUrl = "homeassistant://navigate" + panelPath +
+              "?server=default#hjemmelager-tag=" + encodeURIComponent(directTagId);
+            iphoneNfcUrl = "https://www.home-assistant.io/ios/nfc/?url=" +
+              encodeURIComponent(androidNfcUrl);
+            document.getElementById("copy-android-url").dataset.copyUrl = androidNfcUrl;
+            document.getElementById("copy-iphone-url").dataset.copyUrl = iphoneNfcUrl;
+            document.getElementById("test-android-url").href = androidNfcUrl;
+            document.getElementById("test-iphone-url").href = androidNfcUrl;
+            panelPathStatus.textContent =
+              "Direktelenken bruker Home Assistant-stien " + panelPath + ".";
+          }} catch (error) {{
+            panelPathStatus.textContent =
+              "Kunne ikke lese panelstien. Lenken bruker add-on-adressen som reserve.";
+          }}
+        }}
+
+        useCurrentHomeAssistantPanelPath();
 
         async function copyUrl(value, button) {{
           try {{

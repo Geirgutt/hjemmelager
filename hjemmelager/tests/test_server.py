@@ -112,6 +112,9 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertIn("iPhone", content)
         self.assertIn("Test i Home Assistant", content)
         self.assertIn("skal ikke åpnes i nettleseren", content)
+        self.assertIn("window.top.location.pathname", content)
+        self.assertIn('document.getElementById("copy-iphone-url").dataset.copyUrl', content)
+        self.assertIn("Direktelenken bruker Home Assistant-stien", content)
         self.assertIn("homeassistant://navigate/hassio/ingress/local_hjemmelager", content)
         self.assertEqual(self.app.get_item(item["id"])["tag_id"], "direct-tag-01")
 

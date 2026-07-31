@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.4 - Riktig panelsti
+
+- Bygger NFC-direktelenken fra den faktiske panelstien som er åpen i Home Assistant, i stedet for å anta en Ingress-adresse fra add-on-navnet.
+- Viser hvilken Home Assistant-sti som blir skrevet til taggen, slik at feil adresse er synlig før omskriving.
+
 ## 1.0.3 - Trygg åpning
 
 - Rettet Ingress-direktelenken som kunne ende i Home Assistants generelle 404-side.
