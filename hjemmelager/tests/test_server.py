@@ -93,14 +93,14 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertEqual(
             links["android"],
             "homeassistant://navigate/hassio/ingress/abc123_hjemmelager"
-            "?hjemmelager_tag=tag%20med%20mellomrom%2F%C3%A6",
+            "?server=default#hjemmelager-tag=tag%20med%20mellomrom%2F%C3%A6",
         )
         self.assertTrue(
             links["iphone"].startswith(
                 "https://www.home-assistant.io/ios/nfc/?url="
             )
         )
-        self.assertIn("%3Fhjemmelager_tag%3D", links["iphone"])
+        self.assertIn("%3Fserver%3Ddefault%23hjemmelager-tag%3D", links["iphone"])
 
     def test_direct_nfc_setup_keeps_linked_tag_and_offers_both_platforms(self):
         item = self.create_item("Direktevare", tag_id="direct-tag-01")

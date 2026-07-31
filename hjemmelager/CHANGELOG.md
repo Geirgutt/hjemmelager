@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.3 - Trygg åpning
+
+- Rettet Ingress-direktelenken som kunne ende i Home Assistants generelle 404-side.
+- Direkteåpning bruker nå Home Assistants dokumenterte valg av standardserver og sender tagg-ID-en i navigasjonens fragment.
+
 ## 1.0.2 - Tydelig NFC
 
 - Rettet «Test i Home Assistant» slik at den tester appåpningen, ikke iPhone-lenken som kun er ment for NFC-taggen.

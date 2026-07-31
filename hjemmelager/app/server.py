@@ -26,8 +26,8 @@ except ImportError:
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "1.0.2"
-APP_CODENAME = "Tydelig NFC"
+APP_VERSION = "1.0.3"
+APP_CODENAME = "Trygg åpning"
 TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
@@ -135,11 +135,11 @@ def direct_nfc_links(tag_id, addon_slug):
     addon_slug = str(addon_slug or "").strip()
     if not tag_id or not addon_slug:
         return {"android": "", "iphone": ""}
-    tag_query = quote(tag_id, safe="")
+    tag_fragment = quote(tag_id, safe="")
     panel_path = f"/hassio/ingress/{quote(addon_slug, safe='')}"
     android = (
         f"homeassistant://navigate{panel_path}"
-        f"?hjemmelager_tag={tag_query}"
+        f"?server=default#hjemmelager-tag={tag_fragment}"
     )
     iphone = (
         "https://www.home-assistant.io/ios/nfc/?url="
