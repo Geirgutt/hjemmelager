@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.2 - Tydelig NFC
+
+- Rettet «Test i Home Assistant» slik at den tester appåpningen, ikke iPhone-lenken som kun er ment for NFC-taggen.
+- Forklarer tydelig at direkte åpning erstatter Home Assistants vanlige tagg-URL med en ny URL for den aktuelle varen.
+- Bruker en URL-parameter for å overføre taggen til Hjemmelager, med støtte for den tidligere lenkeformen videre.
+
 ## 1.0.1 - Direkte åpning
 
 - La til en egen NFC-lenke som åpner Home Assistant rett på varen som er koblet til taggen.

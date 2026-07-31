@@ -26,8 +26,8 @@ except ImportError:
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "1.0.1"
-APP_CODENAME = "Direkte åpning"
+APP_VERSION = "1.0.2"
+APP_CODENAME = "Tydelig NFC"
 TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
@@ -135,11 +135,11 @@ def direct_nfc_links(tag_id, addon_slug):
     addon_slug = str(addon_slug or "").strip()
     if not tag_id or not addon_slug:
         return {"android": "", "iphone": ""}
-    tag_fragment = quote(tag_id, safe="")
+    tag_query = quote(tag_id, safe="")
     panel_path = f"/hassio/ingress/{quote(addon_slug, safe='')}"
     android = (
         f"homeassistant://navigate{panel_path}"
-        f"#hjemmelager-tag={tag_fragment}"
+        f"?hjemmelager_tag={tag_query}"
     )
     iphone = (
         "https://www.home-assistant.io/ios/nfc/?url="
@@ -3223,23 +3223,28 @@ def page(title, body, base_path=""):
   <script>
     function openNfcTagFromHomeAssistant() {{
       let topWindow;
-      let fragment = "";
       try {{
         topWindow = window.top;
-        fragment = topWindow.location.hash || "";
       }} catch (error) {{
         return;
       }}
-      const values = new URLSearchParams(fragment.replace(/^#/, ""));
-      const tagId = values.get("hjemmelager-tag");
+      const queryValues = new URLSearchParams(topWindow.location.search || "");
+      const fragmentValues = new URLSearchParams(
+        (topWindow.location.hash || "").replace(/^#/, "")
+      );
+      const tagId = queryValues.get("hjemmelager_tag") ||
+        fragmentValues.get("hjemmelager-tag");
       if (!tagId) return;
-      values.delete("hjemmelager-tag");
+      queryValues.delete("hjemmelager_tag");
+      fragmentValues.delete("hjemmelager-tag");
       try {{
-        const cleanFragment = values.toString();
+        const cleanQuery = queryValues.toString();
+        const cleanFragment = fragmentValues.toString();
         topWindow.history.replaceState(
           topWindow.history.state,
           "",
-          topWindow.location.pathname + topWindow.location.search +
+          topWindow.location.pathname +
+            (cleanQuery ? "?" + cleanQuery : "") +
             (cleanFragment ? "#" + cleanFragment : "")
         );
       }} catch (error) {{
@@ -4010,28 +4015,28 @@ def tag_open_setup_page(item, addon_slug=None):
         <div class="page-heading">
           <div>
             <h1>Åpne «{esc(item['name'])}» fra NFC</h1>
-            <p class="muted">Skriv taggen én gang til med lenken for telefonen din.</p>
+            <p class="muted">Dette erstatter den vanlige Home Assistant-lenken på taggen med en lenke som åpner akkurat denne varen.</p>
           </div>
           <a class="btn" href="item/{item['id']}">Tilbake</a>
         </div>
         <div class="card stack">
           <h2>Android</h2>
-          <p>Trykk knappen og hold telefonen mot NFC-taggen. Etterpå åpner taggen varen direkte i Home Assistant.</p>
+          <p>Trykk knappen og hold telefonen mot NFC-taggen. Dette skriver en ny lenke på taggen; koblingen til varen i Hjemmelager beholdes.</p>
           <div class="actions">
             <button class="btn primary" id="write-android-tag" type="button">Skriv taggen</button>
-            <button class="btn" type="button" data-copy-url="{android_url}">Kopier lenken</button>
-            <a class="btn" href="{android_url}">Test åpning</a>
+            <button class="btn" type="button" data-copy-url="{android_url}">Kopier Android-lenken</button>
+            <a class="btn" href="{android_url}">Test i Home Assistant</a>
           </div>
           <p class="muted" id="nfc-write-status" role="status"></p>
         </div>
         <div class="card stack">
           <h2>iPhone</h2>
-          <p>Kopier lenken og skriv den som en URL på taggen i en NFC-skriverapp. Når NFC-varselet vises, trykker du «Åpne i Home Assistant».</p>
+          <p>Home Assistant-appen kan koble taggen, men kan ikke skrive denne direkteåpningslenken. Kopier iPhone-lenken og skriv den som en URL med en NFC-skriverapp. Når NFC-varselet vises, trykker du «Åpne i Home Assistant».</p>
           <div class="actions">
             <button class="btn primary" type="button" data-copy-url="{iphone_url}">Kopier iPhone-lenken</button>
-            <a class="btn" href="{iphone_url}">Test åpning</a>
+            <a class="btn" href="{android_url}">Test i Home Assistant</a>
           </div>
-          <p class="muted">Dette erstatter bare innholdet på klistremerket. Koblingen til varen i Hjemmelager beholdes.</p>
+          <p class="muted">«Test i Home Assistant» tester selve appåpningen. iPhone-lenken over er kun laget for å ligge på NFC-taggen, og skal ikke åpnes i nettleseren.</p>
         </div>
       </section>
       <script>
