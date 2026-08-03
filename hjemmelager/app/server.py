@@ -26,8 +26,8 @@ except ImportError:
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "1.1.0"
-APP_CODENAME = "Partier og antall"
+APP_VERSION = "1.1.1"
+APP_CODENAME = "Plasseringstagger"
 TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
@@ -69,6 +69,14 @@ BACKUP_ITEM_COLUMNS = (
     "updated_at",
 )
 BACKUP_REGISTRY_COLUMNS = ("id", "name", "created_at")
+BACKUP_LOCATION_TAG_COLUMNS = (
+    "id",
+    "location",
+    "tag_id",
+    "last_scanned_at",
+    "created_at",
+    "updated_at",
+)
 BACKUP_EVENT_COLUMNS = (
     "id",
     "item_id",
@@ -336,6 +344,15 @@ def init_db():
                 foreign key (item_id) references items(id) on delete cascade
             );
 
+            create table if not exists location_tags (
+                id integer primary key autoincrement,
+                location text not null unique,
+                tag_id text not null unique,
+                last_scanned_at integer,
+                created_at integer not null,
+                updated_at integer not null
+            );
+
             create table if not exists tag_link_sessions (
                 id integer primary key check (id = 1),
                 item_id integer not null,
@@ -346,6 +363,17 @@ def init_db():
                 expires_at integer not null,
                 updated_at integer not null,
                 foreign key (item_id) references items(id) on delete cascade
+            );
+
+            create table if not exists location_tag_link_sessions (
+                id integer primary key check (id = 1),
+                location text not null,
+                status text not null default 'waiting',
+                tag_id text not null default '',
+                message text not null default '',
+                started_at integer not null,
+                expires_at integer not null,
+                updated_at integer not null
             );
 
             create table if not exists deleted_items (
@@ -641,6 +669,9 @@ def create_backup_payload():
     with db() as conn:
         items = [dict(row) for row in conn.execute("select * from items order by id")]
         locations = [dict(row) for row in conn.execute("select * from locations order by id")]
+        location_tags = [
+            dict(row) for row in conn.execute("select * from location_tags order by id")
+        ]
         categories = [dict(row) for row in conn.execute("select * from categories order by id")]
         events = [dict(row) for row in conn.execute("select * from events order by id")]
     return {
@@ -651,6 +682,7 @@ def create_backup_payload():
         "data": {
             "items": items,
             "locations": locations,
+            "location_tags": location_tags,
             "categories": categories,
             "events": events,
         },
@@ -678,6 +710,12 @@ def parse_backup_bytes(raw):
             raise ValueError(f"Sikkerhetskopien mangler tabellen {table}")
         if any(not isinstance(row, dict) for row in data[table]):
             raise ValueError(f"Sikkerhetskopien har ugyldige rader i {table}")
+    if "location_tags" not in data:
+        data["location_tags"] = []
+    if not isinstance(data["location_tags"], list) or any(
+        not isinstance(row, dict) for row in data["location_tags"]
+    ):
+        raise ValueError("Sikkerhetskopien har ugyldige plasseringstagger")
     for item in data["items"]:
         if not isinstance(item, dict) or not str(item.get("name") or "").strip():
             raise ValueError("Sikkerhetskopien inneholder en ugyldig vare")
@@ -722,10 +760,12 @@ def restore_backup_payload(payload):
     }
 
     with db() as conn:
+        conn.execute("delete from location_tag_link_sessions")
         conn.execute("delete from tag_link_sessions")
         conn.execute("delete from deleted_items")
         conn.execute("delete from events")
         conn.execute("delete from items")
+        conn.execute("delete from location_tags")
         conn.execute("delete from locations")
         conn.execute("delete from categories")
 
@@ -744,6 +784,30 @@ def restore_backup_payload(payload):
                     f"insert into {table} ({columns}) values ({placeholders})",
                     values,
                 )
+
+        location_tag_placeholders = ",".join("?" for _ in BACKUP_LOCATION_TAG_COLUMNS)
+        location_tag_columns = ",".join(BACKUP_LOCATION_TAG_COLUMNS)
+        valid_locations = {
+            row["name"] for row in conn.execute("select name from locations").fetchall()
+        }
+        for row in data["location_tags"]:
+            location = str(row.get("location") or "").strip()
+            tag_id = str(row.get("tag_id") or "").strip()
+            if not location or not tag_id or location not in valid_locations:
+                continue
+            timestamp = now()
+            values = (
+                row.get("id"),
+                location,
+                tag_id,
+                row.get("last_scanned_at"),
+                row.get("created_at") or timestamp,
+                row.get("updated_at") or timestamp,
+            )
+            conn.execute(
+                f"insert into location_tags ({location_tag_columns}) values ({location_tag_placeholders})",
+                values,
+            )
 
         item_placeholders = ",".join("?" for _ in BACKUP_ITEM_COLUMNS)
         item_columns = ",".join(BACKUP_ITEM_COLUMNS)
@@ -803,6 +867,7 @@ def restore_backup_payload(payload):
     return {
         "items": len(data["items"]),
         "locations": len(data["locations"]),
+        "location_tags": len(data["location_tags"]),
         "categories": len(data["categories"]),
         "events": len(data["events"]),
         "before_filename": before_filename,
@@ -1140,6 +1205,10 @@ def create_item(data):
     location = registry_value(data, "location")
     category = registry_value(data, "category")
     with db() as conn:
+        if tag_id and conn.execute(
+            "select 1 from location_tags where tag_id = ?", (tag_id,)
+        ).fetchone():
+            raise sqlite3.IntegrityError("tag_id already exists")
         save_registry_value(conn, "locations", location)
         save_registry_value(conn, "categories", category)
         cur = conn.execute(
@@ -1233,6 +1302,10 @@ def update_item(item_id, data):
         expiry_batches = []
     best_before = earliest_best_before(expiry_batches)
     with db() as conn:
+        if tag_id and conn.execute(
+            "select 1 from location_tags where tag_id = ?", (tag_id,)
+        ).fetchone():
+            raise sqlite3.IntegrityError("tag_id already exists")
         save_registry_value(conn, "locations", location)
         save_registry_value(conn, "categories", category)
         conn.execute(
@@ -1713,6 +1786,7 @@ def start_tag_link(item_id):
         return None
     timestamp = now()
     with db() as conn:
+        conn.execute("delete from location_tag_link_sessions")
         conn.execute("delete from tag_link_sessions")
         conn.execute(
             """
@@ -1723,6 +1797,80 @@ def start_tag_link(item_id):
             (item_id, timestamp, timestamp + TAG_LINK_TTL_SECONDS, timestamp),
         )
     return get_tag_link_session(item_id)
+
+
+def get_location_tag(location):
+    location = (location or "").strip()
+    if not location:
+        return None
+    with db() as conn:
+        row = conn.execute(
+            "select * from location_tags where location = ?", (location,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_location_tag_by_tag_id(tag_id):
+    tag_id = (tag_id or "").strip()
+    if not tag_id:
+        return None
+    with db() as conn:
+        row = conn.execute(
+            "select * from location_tags where tag_id = ?", (tag_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def start_location_tag_link(location):
+    location = (location or "").strip()
+    if not location or location not in distinct_values("location"):
+        return None
+    timestamp = now()
+    with db() as conn:
+        conn.execute("delete from tag_link_sessions")
+        conn.execute("delete from location_tag_link_sessions")
+        conn.execute(
+            """
+            insert into location_tag_link_sessions
+                (id, location, status, tag_id, message, started_at, expires_at, updated_at)
+            values (1, ?, 'waiting', '', '', ?, ?, ?)
+            """,
+            (location, timestamp, timestamp + TAG_LINK_TTL_SECONDS, timestamp),
+        )
+    return get_location_tag_link_session(location)
+
+
+def get_location_tag_link_session(location=None):
+    with db() as conn:
+        row = conn.execute(
+            "select * from location_tag_link_sessions where id = 1"
+        ).fetchone()
+        if not row or (location is not None and row["location"] != location):
+            return None
+        session = dict(row)
+        if session["status"] == "waiting" and session["expires_at"] <= now():
+            message = "Tiden løp ut uten at en tag ble skannet."
+            conn.execute(
+                "update location_tag_link_sessions set status = 'expired', message = ?, updated_at = ? where id = 1",
+                (message, now()),
+            )
+            session["status"] = "expired"
+            session["message"] = message
+        session["seconds_left"] = max(0, session["expires_at"] - now())
+        return session
+
+
+def cancel_location_tag_link(location):
+    with db() as conn:
+        conn.execute(
+            """
+            update location_tag_link_sessions
+            set status = 'cancelled', message = 'Koblingen ble avbrutt.', updated_at = ?
+            where id = 1 and location = ? and status = 'waiting'
+            """,
+            (now(), location),
+        )
+    return get_location_tag_link_session(location)
 
 
 def get_tag_link_session(item_id=None):
@@ -1771,7 +1919,17 @@ def touch_tag(tag_id):
             """,
             (timestamp,),
         ).fetchone()
+        location_session_row = conn.execute(
+            """
+            select * from location_tag_link_sessions
+            where id = 1 and status = 'waiting' and expires_at > ?
+            """,
+            (timestamp,),
+        ).fetchone()
         linked_row = conn.execute("select * from items where tag_id = ?", (tag_id,)).fetchone()
+        linked_location_row = conn.execute(
+            "select * from location_tags where tag_id = ?", (tag_id,)
+        ).fetchone()
 
         if session_row:
             target_row = conn.execute(
@@ -1789,8 +1947,11 @@ def touch_tag(tag_id):
                 )
                 return {"status": "cancelled", "tag_id": tag_id, "message": message}
 
-            if linked_row and linked_row["id"] != target_row["id"]:
-                message = f'Taggen er allerede koblet til «{linked_row["name"]}».'
+            if (linked_row and linked_row["id"] != target_row["id"]) or linked_location_row:
+                existing_name = (
+                    linked_row["name"] if linked_row else linked_location_row["location"]
+                )
+                message = f'Taggen er allerede koblet til «{existing_name}».'
                 conn.execute(
                     """
                     update tag_link_sessions
@@ -1803,8 +1964,8 @@ def touch_tag(tag_id):
                     "status": "conflict",
                     "tag_id": tag_id,
                     "message": message,
-                    "existing_item_id": linked_row["id"],
-                    "existing_item_name": linked_row["name"],
+                    "existing_item_id": linked_row["id"] if linked_row else None,
+                    "existing_item_name": existing_name,
                 }
             else:
                 conn.execute(
@@ -1838,6 +1999,68 @@ def touch_tag(tag_id):
                     "message": message,
                     "item_id": target_row["id"],
                 }
+        elif location_session_row:
+            location = location_session_row["location"]
+            location_exists = conn.execute(
+                "select 1 from locations where name = ?", (location,)
+            ).fetchone()
+            if not location_exists:
+                message = "Plasseringen finnes ikke lenger."
+                conn.execute(
+                    "update location_tag_link_sessions set status = 'cancelled', message = ?, updated_at = ? where id = 1",
+                    (message, timestamp),
+                )
+                return {"status": "cancelled", "tag_id": tag_id, "message": message}
+
+            conflict = linked_row or (
+                linked_location_row and linked_location_row["location"] != location
+            )
+            if conflict:
+                existing_name = (
+                    linked_row["name"] if linked_row else linked_location_row["location"]
+                )
+                message = f'Taggen er allerede koblet til «{existing_name}».'
+                conn.execute(
+                    """
+                    update location_tag_link_sessions
+                    set status = 'conflict', tag_id = ?, message = ?, updated_at = ?
+                    where id = 1
+                    """,
+                    (tag_id, message, timestamp),
+                )
+                result = {
+                    "status": "conflict",
+                    "tag_id": tag_id,
+                    "message": message,
+                }
+            else:
+                conn.execute(
+                    """
+                    insert into location_tags
+                        (location, tag_id, last_scanned_at, created_at, updated_at)
+                    values (?, ?, ?, ?, ?)
+                    on conflict(location) do update set
+                        tag_id = excluded.tag_id,
+                        last_scanned_at = excluded.last_scanned_at,
+                        updated_at = excluded.updated_at
+                    """,
+                    (location, tag_id, timestamp, timestamp, timestamp),
+                )
+                message = f'Taggen er koblet til plasseringen «{location}».'
+                conn.execute(
+                    """
+                    update location_tag_link_sessions
+                    set status = 'linked', tag_id = ?, message = ?, updated_at = ?
+                    where id = 1
+                    """,
+                    (tag_id, message, timestamp),
+                )
+                result = {
+                    "status": "linked",
+                    "tag_id": tag_id,
+                    "message": message,
+                    "location": location,
+                }
         elif linked_row:
             conn.execute(
                 "update items set last_scanned_at = ?, updated_at = ? where id = ?",
@@ -1852,6 +2075,16 @@ def touch_tag(tag_id):
                 tag_id,
             )
             result = {"status": "touched", "tag_id": tag_id, "item_id": linked_row["id"]}
+        elif linked_location_row:
+            conn.execute(
+                "update location_tags set last_scanned_at = ?, updated_at = ? where id = ?",
+                (timestamp, timestamp, linked_location_row["id"]),
+            )
+            result = {
+                "status": "touched",
+                "tag_id": tag_id,
+                "location": linked_location_row["location"],
+            }
         else:
             result = {"status": "not_found", "tag_id": tag_id}
 
@@ -2286,6 +2519,36 @@ def page(title, body, base_path=""):
     .save-status:empty {{
       display: none;
     }}
+    .save-status.increased {{
+      border-color: color-mix(in srgb, var(--ok) 55%, var(--line));
+      color: var(--ok);
+    }}
+    .save-status.decreased {{
+      border-color: color-mix(in srgb, var(--danger) 55%, var(--line));
+      color: var(--danger);
+    }}
+    [data-quantity-display].quantity-increased {{
+      animation: quantity-increased 2.4s ease-out;
+    }}
+    [data-quantity-display].quantity-decreased {{
+      animation: quantity-decreased 2.4s ease-out;
+    }}
+    @keyframes quantity-increased {{
+      0%, 24% {{
+        color: var(--ok);
+        background: color-mix(in srgb, var(--ok) 16%, transparent);
+        border-radius: 7px;
+      }}
+      100% {{ color: inherit; background: transparent; }}
+    }}
+    @keyframes quantity-decreased {{
+      0%, 24% {{
+        color: var(--danger);
+        background: color-mix(in srgb, var(--danger) 14%, transparent);
+        border-radius: 7px;
+      }}
+      100% {{ color: inherit; background: transparent; }}
+    }}
     @media (prefers-reduced-motion: reduce) {{
       html {{ scroll-behavior: auto; }}
       *, *::before, *::after {{
@@ -2644,6 +2907,27 @@ def page(title, body, base_path=""):
     .item-row-actions .btn {{
       padding: 6px 9px;
     }}
+    .location-list {{
+      display: grid;
+      gap: 8px;
+      margin: 14px 0 0;
+      padding: 0;
+      list-style: none;
+    }}
+    .location-entry {{
+      display: grid;
+      gap: 8px;
+      padding: 11px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+    }}
+    .location-entry > div:first-child {{
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+    }}
+    .location-entry .actions {{ margin-top: 0; }}
     .item-title {{
       display: flex;
       align-items: start;
@@ -3623,11 +3907,77 @@ def page(title, body, base_path=""):
 
     openNfcTagFromHomeAssistant();
 
+    function formatQuantity(value) {{
+      return new Intl.NumberFormat("nb-NO", {{ maximumFractionDigits: 2 }}).format(value);
+    }}
+
+    async function handleQuickAdjustment(form, submitter) {{
+      const itemContainer = form.closest("[data-item-id]");
+      const quantityDisplay = itemContainer?.querySelector("[data-quantity-display]");
+      const quantityValue = quantityDisplay?.querySelector("[data-quantity-value]");
+      const delta = Number(form.querySelector('[name="delta"]')?.value || 0);
+      const itemId = itemContainer?.dataset.itemId;
+      const itemName = itemContainer?.dataset.itemName || "Varen";
+      const status = document.querySelector(".save-status");
+      if (!itemId || !quantityDisplay || !quantityValue || !delta) return;
+
+      submitter.disabled = true;
+      submitter.setAttribute("aria-busy", "true");
+      try {{
+        const response = await fetch("api/items/" + encodeURIComponent(itemId) + "/adjust", {{
+          method: "POST",
+          headers: {{
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
+          }},
+          body: new URLSearchParams({{ delta: String(delta), note: "hurtigknapp" }})
+        }});
+        if (!response.ok) throw new Error("Kunne ikke oppdatere antallet");
+        const payload = await response.json();
+        const previous = Number(quantityDisplay.dataset.quantityRaw || 0);
+        const next = Number(payload.item?.quantity || 0);
+        quantityDisplay.dataset.quantityRaw = String(next);
+        quantityValue.textContent = formatQuantity(next);
+        const effectClass = delta > 0 ? "quantity-increased" : "quantity-decreased";
+        quantityDisplay.classList.remove("quantity-increased", "quantity-decreased");
+        void quantityDisplay.offsetWidth;
+        quantityDisplay.classList.add(effectClass);
+        window.clearTimeout(quantityDisplay.quantityFeedbackTimer);
+        quantityDisplay.quantityFeedbackTimer = window.setTimeout(
+          () => quantityDisplay.classList.remove(effectClass),
+          2500
+        );
+        if (status) {{
+          status.classList.remove("increased", "decreased");
+          status.classList.add(delta > 0 ? "increased" : "decreased");
+          status.textContent = itemName + ": " + formatQuantity(previous) + " → " + formatQuantity(next);
+          window.clearTimeout(status.quickFeedbackTimer);
+          status.quickFeedbackTimer = window.setTimeout(() => {{
+            status.textContent = "";
+            status.classList.remove("increased", "decreased");
+          }}, 2600);
+        }}
+      }} catch (error) {{
+        if (status) {{
+          status.classList.remove("increased", "decreased");
+          status.textContent = "Kunne ikke oppdatere antallet. Prøv igjen.";
+        }}
+      }} finally {{
+        submitter.disabled = false;
+        submitter.removeAttribute("aria-busy");
+      }}
+    }}
+
     document.addEventListener("submit", (event) => {{
       const form = event.target;
       if (!(form instanceof HTMLFormElement) || form.dataset.noBusy === "true") return;
       const submitter = event.submitter || form.querySelector('button[type="submit"], button:not([type])');
       if (!submitter) return;
+      if (form.classList.contains("quick-adjust")) {{
+        event.preventDefault();
+        handleQuickAdjustment(form, submitter);
+        return;
+      }}
       window.setTimeout(() => {{
         submitter.disabled = true;
         submitter.setAttribute("aria-busy", "true");
@@ -3712,9 +4062,9 @@ def item_card(item):
     best_before = f"Best før {item['best_before']}" if item["best_before"] else ""
     extra = " · ".join(filter(None, [price, best_before]))
     quantity_label = (
-        f"{fmt_num(item['quantity'])} {esc(item['unit'])} på lager"
+        f'<span data-quantity-value>{fmt_num(item["quantity"])}</span> {esc(item["unit"])} på lager'
         if item["kind"] == "consumable"
-        else f"{fmt_num(item['quantity'])} {esc(item['unit'])}"
+        else f'<span data-quantity-value>{fmt_num(item["quantity"])}</span> {esc(item["unit"])}'
     )
     opened = ""
     open_action = ""
@@ -3723,7 +4073,7 @@ def item_card(item):
         open_action = f'<form method="post" action="item/{item["id"]}/open"><button class="btn" title="Flytt en fra lager til åpnet">Åpne</button></form>'
     thumb = f'<a href="item/{item["id"]}"><img class="item-thumb" src="{esc(item["image_url"])}" alt=""></a>' if item["image_url"] else '<div class="item-thumb" aria-hidden="true"></div>'
     return f"""
-    <article class="card item-card">
+    <article class="card item-card" data-item-id="{item['id']}" data-item-name="{esc(item['name'])}">
       {thumb}
       <div class="item-main">
         <div class="item-title">
@@ -3734,11 +4084,11 @@ def item_card(item):
           <div class="item-meta-line">{esc(category)} · {esc(location)}</div>
           {f'<div class="item-meta-line">{esc(extra)}</div>' if extra else ''}
         </div>
-        <div class="qty">{quantity_label}</div>
+        <div class="qty" data-quantity-display data-quantity-raw="{float(item['quantity'])}">{quantity_label}</div>
         {opened}
         <div class="actions">
-          <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn" aria-label="Reduser {esc(item['name'])} med én">−</button></form>
-          <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="1"><button class="btn primary" aria-label="Øk {esc(item['name'])} med én">+</button></form>
+          <form class="quick-adjust" method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn" aria-label="Reduser {esc(item['name'])} med én">−</button></form>
+          <form class="quick-adjust" method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="1"><button class="btn primary" aria-label="Øk {esc(item['name'])} med én">+</button></form>
           {open_action}
           <a class="btn details-link" href="item/{item['id']}">Se vare</a>
         </div>
@@ -3764,7 +4114,7 @@ def item_row(item):
     )
     stock_suffix = f"{esc(item['unit'])} på lager" if item["kind"] == "consumable" else esc(item["unit"])
     return f"""
-    <article class="item-row">
+    <article class="item-row" data-item-id="{item['id']}" data-item-name="{esc(item['name'])}">
       {thumb}
       <div class="item-row-title">
         <a href="item/{item['id']}">{esc(item['name'])}</a>
@@ -3772,10 +4122,10 @@ def item_row(item):
       </div>
       <div class="item-row-meta muted">{esc(location)}</div>
       <div class="item-row-location muted">{esc(category)}</div>
-      <div class="item-row-qty">{fmt_num(item['quantity'])} <span class="muted">{stock_suffix}</span>{f'<br><span class="muted">{esc(opened)}</span>' if opened else ''}</div>
+      <div class="item-row-qty" data-quantity-display data-quantity-raw="{float(item['quantity'])}"><span data-quantity-value>{fmt_num(item['quantity'])}</span> <span class="muted">{stock_suffix}</span>{f'<br><span class="muted">{esc(opened)}</span>' if opened else ''}</div>
       <div class="item-row-actions">
-        <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn" title="Reduser med én">−</button></form>
-        <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="1"><button class="btn primary" title="Øk med én">+</button></form>
+        <form class="quick-adjust" method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn" title="Reduser med én">−</button></form>
+        <form class="quick-adjust" method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="1"><button class="btn primary" title="Øk med én">+</button></form>
         {open_action}
       </div>
     </article>
@@ -4292,11 +4642,24 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
     """
 
 
-def tag_link_page(item, session):
+def tag_link_page(
+    item,
+    session,
+    route_base=None,
+    status_url=None,
+    direct_url=None,
+    back_url=None,
+    target_description=None,
+):
+    route_base = route_base or f"item/{item['id']}/tag-link"
+    status_url = status_url or f"api/tag-link/status?item_id={item['id']}"
+    direct_url = direct_url or f"item/{item['id']}/tag-open-setup"
+    back_url = back_url or f"item/{item['id']}"
+    target_description = target_description or f'«{item["name"]}»'
     nfc_connection = get_home_assistant_nfc_state()
     status = session["status"] if session else "cancelled"
     messages = {
-        "waiting": f'Åpne Home Assistant-appen og skann klistremerket du vil bruke på «{item["name"]}».',
+        "waiting": f'Åpne Home Assistant-appen og skann klistremerket du vil bruke på {target_description}.',
         "linked": session["message"] if session else "Taggen er koblet.",
         "conflict": session["message"] if session else "Taggen er allerede i bruk.",
         "expired": session["message"] if session else "Tiden løp ut.",
@@ -4312,7 +4675,7 @@ def tag_link_page(item, session):
     )
     retry = (
         f"""
-          <form method="post" action="item/{item['id']}/tag-link/start">
+          <form method="post" action="{esc(route_base)}/start">
             <button class="btn primary">Prøv igjen</button>
           </form>
         """
@@ -4321,7 +4684,7 @@ def tag_link_page(item, session):
     )
     cancel = (
         f"""
-          <form method="post" action="item/{item['id']}/tag-link/cancel">
+          <form method="post" action="{esc(route_base)}/cancel">
             <button class="btn">Avbryt</button>
           </form>
         """
@@ -4330,7 +4693,7 @@ def tag_link_page(item, session):
     )
     done = (
         (
-            f'<a class="btn primary" href="item/{item["id"]}/tag-open-setup">'
+            f'<a class="btn primary" href="{esc(direct_url)}">'
             "Gjør taggen klar for direkte åpning</a>"
         )
         if status == "linked"
@@ -4357,7 +4720,10 @@ def tag_link_page(item, session):
         </div>
       </section>
       <script>
-        const itemId = {item["id"]};
+        const tagLinkRoute = {json.dumps(route_base, ensure_ascii=False)};
+        const tagLinkStatusUrl = {json.dumps(status_url, ensure_ascii=False)};
+        const tagLinkDirectUrl = {json.dumps(direct_url, ensure_ascii=False)};
+        const tagLinkBackUrl = {json.dumps(back_url, ensure_ascii=False)};
         const initialStatus = {status!r};
         const statusTitle = document.getElementById("tag-link-title");
         const statusMessage = document.getElementById("tag-link-message");
@@ -4382,27 +4748,27 @@ def tag_link_page(item, session):
           if (data.status === "linked") {{
             statusTitle.textContent = "Taggen er koblet ✓";
             actions.innerHTML =
-              '<a class="btn primary" href="item/' + itemId +
-              '/tag-open-setup">Gjør taggen klar for direkte åpning</a>';
+              '<a class="btn primary" href="' + tagLinkDirectUrl +
+              '">Gjør taggen klar for direkte åpning</a>';
           }} else if (data.status === "conflict") {{
             statusTitle.textContent = "Taggen er allerede i bruk";
             actions.innerHTML =
-              '<form method="post" action="item/' + itemId + '/tag-link/start">' +
+              '<form method="post" action="' + tagLinkRoute + '/start">' +
               '<button class="btn primary">Prøv igjen</button></form>' +
-              '<a class="btn" href="item/' + itemId + '">Avslutt</a>';
+              '<a class="btn" href="' + tagLinkBackUrl + '">Avslutt</a>';
           }} else {{
             statusTitle.textContent = "Koblingen ble ikke fullført";
             actions.innerHTML =
-              '<form method="post" action="item/' + itemId + '/tag-link/start">' +
+              '<form method="post" action="' + tagLinkRoute + '/start">' +
               '<button class="btn primary">Prøv igjen</button></form>' +
-              '<a class="btn" href="item/' + itemId + '">Avslutt</a>';
+              '<a class="btn" href="' + tagLinkBackUrl + '">Avslutt</a>';
           }}
           clearInterval(pollTimer);
         }}
 
         async function pollStatus() {{
           try {{
-            const response = await fetch("api/tag-link/status?item_id=" + itemId, {{
+            const response = await fetch(tagLinkStatusUrl, {{
               headers: {{ "Accept": "application/json" }},
               cache: "no-store"
             }});
@@ -4421,23 +4787,37 @@ def tag_link_page(item, session):
     """
 
 
-def tag_open_setup_page(item, addon_slug=None):
+def tag_open_setup_page(
+    item,
+    addon_slug=None,
+    back_url=None,
+    link_url=None,
+    heading=None,
+    description=None,
+):
+    back_url = back_url or f"item/{item['id']}"
+    link_url = link_url or f"item/{item['id']}/tag-link"
+    heading = heading or f'Åpne «{item["name"]}» fra NFC'
+    description = description or (
+        "Dette erstatter den vanlige Home Assistant-lenken på taggen med en "
+        "lenke som åpner akkurat denne varen."
+    )
     links = direct_nfc_links(item.get("tag_id"), addon_slug or get_addon_slug())
     if not item.get("tag_id"):
-        return """
+        return f"""
           <section class="card stack">
             <h1>Taggen er ikke koblet</h1>
-            <p>Koble en NFC-tag til varen før du gjør den klar for direkte åpning.</p>
-            <a class="btn primary" href="item/{id}/tag-link">Koble NFC-tag</a>
+            <p>Koble en NFC-tag før du gjør den klar for direkte åpning.</p>
+            <a class="btn primary" href="{esc(link_url)}">Koble NFC-tag</a>
           </section>
-        """.format(id=item["id"])
+        """
     if not links["android"]:
         return f"""
           <section class="card stack">
             <h1>Direkte åpning er ikke tilgjengelig ennå</h1>
             <p>Hjemmelager fant ikke adressen til panelet i Home Assistant.</p>
             <p class="muted">Start add-onen på nytt og åpne denne siden gjennom Home Assistant.</p>
-            <a class="btn" href="item/{item['id']}">Tilbake til varen</a>
+            <a class="btn" href="{esc(back_url)}">Tilbake</a>
           </section>
         """
 
@@ -4448,10 +4828,10 @@ def tag_open_setup_page(item, addon_slug=None):
       <section class="stack">
         <div class="page-heading">
           <div>
-            <h1>Åpne «{esc(item['name'])}» fra NFC</h1>
-            <p class="muted">Dette erstatter den vanlige Home Assistant-lenken på taggen med en lenke som åpner akkurat denne varen.</p>
+            <h1>{esc(heading)}</h1>
+            <p class="muted">{esc(description)}</p>
           </div>
-          <a class="btn" href="item/{item['id']}">Tilbake</a>
+          <a class="btn" href="{esc(back_url)}">Tilbake</a>
         </div>
         <div class="card stack">
           <h2>Android</h2>
@@ -4543,6 +4923,39 @@ def tag_open_setup_page(item, addon_slug=None):
         }}
       </script>
     """
+
+
+def location_tag_link_page(location, session):
+    encoded_location = quote(location, safe="")
+    return tag_link_page(
+        {"id": 0, "name": location},
+        session,
+        route_base=f"location/{encoded_location}/tag-link",
+        status_url="api/location-tag-link/status?" + urlencode({"location": location}),
+        direct_url=f"location/{encoded_location}/tag-open-setup",
+        back_url="organize",
+        target_description=f'plasseringen «{location}»',
+    )
+
+
+def location_tag_open_setup_page(location, addon_slug=None):
+    location_tag = get_location_tag(location) or {}
+    encoded_location = quote(location, safe="")
+    return tag_open_setup_page(
+        {
+            "id": 0,
+            "name": location,
+            "tag_id": location_tag.get("tag_id"),
+        },
+        addon_slug=addon_slug,
+        back_url="organize",
+        link_url=f"location/{encoded_location}/tag-link",
+        heading=f'Åpne plasseringen «{location}» fra NFC',
+        description=(
+            "Taggen åpner lageret ferdig filtrert til denne plasseringen. "
+            "Produkttagger fortsetter å åpne den enkelte varen."
+        ),
+    )
 
 
 def scan_page():
@@ -4887,7 +5300,48 @@ def organize_page():
     nfc_ready = nfc["status"] == "connected"
     nfc_label = "Tilkoblet" if nfc_ready else "Kobler til"
     nfc_dot = "" if nfc_ready else " waiting"
-    location_list = "".join(f"<li>{esc(value)}</li>" for value in locations) or "<li>Ingen steder ennå</li>"
+    with db() as conn:
+        location_rows = conn.execute(
+            """
+            select l.name,
+                   count(i.id) as item_count,
+                   lt.tag_id
+            from locations l
+            left join items i on i.location = l.name
+            left join location_tags lt on lt.location = l.name
+            group by l.id, l.name, lt.tag_id
+            order by lower(l.name)
+            """
+        ).fetchall()
+    location_entries = []
+    for row in location_rows:
+        location = row["name"]
+        encoded_location = quote(location, safe="")
+        filtered_url = ".?" + urlencode({"location": location, "kind": "all"})
+        tag_label = "Bytt NFC-tag" if row["tag_id"] else "Koble NFC-tag"
+        direct_action = (
+            f'<a class="btn" href="location/{encoded_location}/tag-open-setup">Direkte åpning</a>'
+            if row["tag_id"]
+            else ""
+        )
+        location_entries.append(
+            f"""
+              <li class="location-entry">
+                <div>
+                  <strong>{esc(location)}</strong>
+                  <span class="muted">{row['item_count']} vare{'r' if row['item_count'] != 1 else ''}</span>
+                </div>
+                <div class="actions">
+                  <a class="btn" href="{esc(filtered_url)}">Vis varer</a>
+                  <form method="post" action="location/{encoded_location}/tag-link/start">
+                    <button class="btn primary">{tag_label}</button>
+                  </form>
+                  {direct_action}
+                </div>
+              </li>
+            """
+        )
+    location_list = "".join(location_entries) or "<li>Ingen steder ennå</li>"
     category_list = "".join(f"<li>{esc(value)}</li>" for value in categories) or "<li>Ingen kategorier ennå</li>"
     return f"""
     <h1>Steder og kategorier</h1>
@@ -4923,7 +5377,7 @@ def organize_page():
           </label>
           <button class="btn primary">Legg til sted</button>
         </form>
-        <ul>{location_list}</ul>
+        <ul class="location-list">{location_list}</ul>
       </div>
       <div class="card">
         <h2>Kategorier</h2>
@@ -5338,12 +5792,15 @@ class Handler(BaseHTTPRequestHandler):
             if result.get("item_id"):
                 self.redirect(f"item/{result['item_id']}?scanned=1")
                 return
+            if result.get("location"):
+                self.redirect(".?" + urlencode({"location": result["location"], "kind": "all"}))
+                return
             self.send_html(
                 "Ukjent NFC-tag",
                 """
                   <section class="card stack">
-                    <h1>Taggen er ikke koblet til en vare</h1>
-                    <p>Koble taggen fra varesiden i Hjemmelager og prøv igjen.</p>
+                    <h1>Taggen er ikke koblet</h1>
+                    <p>Koble taggen til en vare eller plassering i Hjemmelager og prøv igjen.</p>
                     <a class="btn primary" href=".">Åpne lageret</a>
                   </section>
                 """,
@@ -5362,6 +5819,26 @@ class Handler(BaseHTTPRequestHandler):
         if path == "low-stock":
             self.send_html("Lav beholdning", shopping_list_page())
             return
+
+        if path.startswith("location/"):
+            parts = path.split("/")
+            location = parts[1] if len(parts) > 1 else ""
+            if location not in distinct_values("location"):
+                self.send_html("Ikke funnet", "<h1>Plasseringen finnes ikke</h1>", HTTPStatus.NOT_FOUND)
+                return
+            if len(parts) == 3 and parts[2] == "tag-link":
+                session = get_location_tag_link_session(location)
+                self.send_html(
+                    "Koble NFC-tag til plassering",
+                    location_tag_link_page(location, session),
+                )
+                return
+            if len(parts) == 3 and parts[2] == "tag-open-setup":
+                self.send_html(
+                    "Direkte NFC-åpning",
+                    location_tag_open_setup_page(location),
+                )
+                return
 
         if path.startswith("item/"):
             parts = path.split("/")
@@ -5582,6 +6059,24 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(session)
             return
 
+        if path == "api/location-tag-link/status":
+            query = parse_qs(urlparse(self.path).query)
+            location = (query.get("location") or [""])[0]
+            session = get_location_tag_link_session(location)
+            if not session:
+                self.send_json(
+                    {
+                        "status": "cancelled",
+                        "message": "Ingen aktiv tag-kobling.",
+                        "seconds_left": 0,
+                        "home_assistant": get_home_assistant_nfc_state(),
+                    }
+                )
+                return
+            session["home_assistant"] = get_home_assistant_nfc_state()
+            self.send_json(session)
+            return
+
         if path == "api/product-lookup":
             query = parse_qs(urlparse(self.path).query)
             barcode = (query.get("barcode") or [""])[0]
@@ -5720,6 +6215,29 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json({"item": item}, HTTPStatus.CREATED)
             return
+
+        if path.startswith("location/"):
+            parts = path.split("/")
+            location = parts[1] if len(parts) > 1 else ""
+            if (
+                len(parts) == 4
+                and parts[2] == "tag-link"
+                and parts[3] in ("start", "cancel")
+            ):
+                if parts[3] == "start":
+                    session = start_location_tag_link(location)
+                    if not session:
+                        self.send_html(
+                            "Ikke funnet",
+                            "<h1>Plasseringen finnes ikke</h1>",
+                            HTTPStatus.NOT_FOUND,
+                        )
+                        return
+                    self.redirect(f"location/{quote(location, safe='')}/tag-link")
+                    return
+                cancel_location_tag_link(location)
+                self.redirect("organize")
+                return
 
         if path.startswith("item/"):
             parts = path.split("/")

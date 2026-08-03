@@ -41,6 +41,8 @@ Lagerforsiden viser antall varer, hva som må kjøpes, varer med nær best før 
 
 På varesiden kan beholdningen endres med **Fjern 1**, **Legg til 1**, **Legg til 5**, **Legg til 10** eller et eget tall. Eget tall kan også være negativt, for eksempel `-3`.
 
+Hurtigknappene `+` og `−` på lagerforsiden endrer antallet uten å åpne varen. Antallet blir kort grønt ved økning og rødt ved reduksjon. En melding viser samtidig gammelt og nytt antall, for eksempel **Melk: 8 → 9**.
+
 Forbruksvarer kan ha flere holdbarhetspartier. Et parti består av et antall og en best før-dato, for eksempel 6 melk med én dato og 4 med en annen. Ved **Legg til parti** velger du om antallet skal legges til totalbeholdningen, eller om det allerede finnes i totalen og bare skal få en dato. Når beholdningen reduseres, trekkes varer automatisk fra partiet med tidligst dato først.
 
 **Fjern dato** gjør partiet udatert, men beholder antallet i lageret. Eksisterende varer som hadde én holdbarhetsdato før oppgraderingen, blir automatisk gjort om til ett parti med samme antall og dato.
@@ -69,6 +71,15 @@ Home Assistant sin mobilapp kan lese NFC-tags. Hjemmelager kobler seg automatisk
 5. Velg **Gjør taggen klar for direkte åpning** hvis du vil at taggen skal åpne denne varen – ikke bare sende en taggskanning til Home Assistant.
 
 Hvis taggen allerede tilhører en annen vare, får du beskjed og ingenting flyttes automatisk. Feltet **Home Assistant Tag-ID** under avanserte varefelter kan fortsatt brukes som manuell reserve.
+
+### Koble en NFC-tag til en plassering
+
+1. Åpne **Mer** og finn plasseringen under **Plasseringer**.
+2. Trykk **Koble NFC-tag** ved for eksempel **Kjøleskapsdør**.
+3. Skann NFC-klistremerket i Home Assistant-appen innen tre minutter.
+4. Velg **Gjør taggen klar for direkte åpning** og skriv direktelenken på samme måte som for en varetagg.
+
+Når plasseringstaggen skannes, åpnes lagerforsiden ferdig filtrert til den plasseringen og viser både forbruksvarer og gjenstander. Produkttagger fortsetter å åpne den enkelte varen. Samme fysiske tagg kan ikke være koblet til både en vare og en plassering.
 
 Dette registrerer scannen direkte i Hjemmelager. Under en aktiv **Koble NFC-tag**-økt kobles neste ukjente tag til den valgte varen. Ellers oppdateres “sist scannet” for kjente tagger.
 

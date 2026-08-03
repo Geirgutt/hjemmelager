@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.1 - Plasseringstagger
+
+- Gjør det mulig å koble NFC-tagger til plasseringer uten å fjerne støtten for produkttagger.
+- En plasseringstagg åpner lagerlisten ferdig filtrert til det aktuelle stedet.
+- Viser NFC-handlinger direkte under hver plassering på siden **Steder og kategorier**.
+- Hurtigknappene `+` og `−` oppdaterer beholdningen i listen uten å åpne varen.
+- Antallet pulserer grønt ved økning og rødt ved reduksjon, med en kort bekreftelse på gammelt og nytt antall.
+
 ## 1.1.0 - Partier og antall
 
 - La til raske lagerknapper for `+5` og `+10`, samt et eget felt for valgfri positiv eller negativ endring.

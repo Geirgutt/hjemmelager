@@ -48,10 +48,12 @@ class HjemmelagerTests(unittest.TestCase):
 
     def setUp(self):
         with self.app.db() as conn:
+            conn.execute("delete from location_tag_link_sessions")
             conn.execute("delete from tag_link_sessions")
             conn.execute("delete from deleted_items")
             conn.execute("delete from events")
             conn.execute("delete from items")
+            conn.execute("delete from location_tags")
             conn.execute("delete from locations")
             conn.execute("delete from categories")
         self.app.PRODUCT_LOOKUP_CACHE.clear()
@@ -83,6 +85,67 @@ class HjemmelagerTests(unittest.TestCase):
         self.app.start_tag_link(second["id"])
         self.assertEqual(self.app.cancel_tag_link(second["id"])["status"], "cancelled")
         self.assertEqual(self.app.touch_tag("ukjent-tag")["status"], "not_found")
+
+    def test_location_nfc_opens_a_filtered_location_without_replacing_item_tags(self):
+        item = self.create_item("Melk", location="Kjøleskap > Dør")
+        self.assertEqual(
+            self.app.start_location_tag_link("Kjøleskap > Dør")["status"],
+            "waiting",
+        )
+
+        linked = self.app.touch_tag("fridge-door-tag")
+        touched = self.app.touch_tag("fridge-door-tag")
+
+        self.assertEqual(linked["status"], "linked")
+        self.assertEqual(linked["location"], "Kjøleskap > Dør")
+        self.assertEqual(touched["status"], "touched")
+        self.assertEqual(touched["location"], "Kjøleskap > Dør")
+        self.assertIsNone(self.app.get_item(item["id"])["tag_id"])
+        self.assertEqual(
+            self.app.get_location_tag("Kjøleskap > Dør")["tag_id"],
+            "fridge-door-tag",
+        )
+
+    def test_same_nfc_tag_cannot_be_linked_to_item_and_location(self):
+        item = self.create_item("Kaffe", location="Matskap")
+        self.app.start_tag_link(item["id"])
+        self.app.touch_tag("shared-tag")
+
+        self.app.start_location_tag_link("Matskap")
+        result = self.app.touch_tag("shared-tag")
+
+        self.assertEqual(result["status"], "conflict")
+        self.assertIsNone(self.app.get_location_tag("Matskap"))
+
+    def test_location_nfc_pages_explain_filtered_opening(self):
+        self.create_item("Pasta", location="Matskap")
+        session = self.app.start_location_tag_link("Matskap")
+        link_page = self.app.location_tag_link_page("Matskap", session)
+        self.app.touch_tag("pantry-tag")
+        setup_page = self.app.location_tag_open_setup_page(
+            "Matskap", addon_slug="abc_hjemmelager"
+        )
+        organize = self.app.organize_page()
+
+        self.assertIn("plasseringen «Matskap»", link_page)
+        self.assertIn("api/location-tag-link/status", link_page)
+        self.assertIn("ferdig filtrert", setup_page)
+        self.assertIn("Vis varer", organize)
+        self.assertIn("Direkte åpning", organize)
+
+    def test_quick_adjustment_stays_in_inventory_and_has_color_feedback(self):
+        item = self.create_item("Melk", quantity="3")
+        card = self.app.item_card(item)
+        row = self.app.item_row(item)
+        full_page = self.app.page("Varer", card)
+
+        self.assertEqual(card.count('class="quick-adjust"'), 2)
+        self.assertEqual(row.count('class="quick-adjust"'), 2)
+        self.assertIn("data-quantity-display", card)
+        self.assertIn("handleQuickAdjustment", full_page)
+        self.assertIn("quantity-increased", full_page)
+        self.assertIn("quantity-decreased", full_page)
+        self.assertIn("event.preventDefault()", full_page)
 
     def test_direct_nfc_links_open_hjemmelager_panel_with_tag(self):
         links = self.app.direct_nfc_links(
@@ -230,6 +293,8 @@ class HjemmelagerTests(unittest.TestCase):
             image_url="data:image/jpeg;base64,ZmFrZQ==",
         )
         self.app.adjust_item(item["id"], 2, "backup-test")
+        self.app.start_location_tag_link("Bod")
+        self.app.touch_tag("storage-tag")
 
         backup = self.app.create_backup_payload()
         self.assertEqual(backup["format"], "hjemmelager-backup")
@@ -237,11 +302,14 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertEqual(backup["data"]["items"][0]["name"], "Backupvare")
         self.assertTrue(backup["data"]["items"][0]["image_url"].startswith("data:image/"))
         self.assertEqual(backup["data"]["locations"][0]["name"], "Bod")
+        self.assertEqual(backup["data"]["location_tags"][0]["tag_id"], "storage-tag")
         self.assertEqual(backup["data"]["categories"][0]["name"], "Test")
         self.assertGreaterEqual(len(backup["data"]["events"]), 2)
 
     def test_restore_replaces_data_and_keeps_before_copy(self):
         original = self.create_item("Original", quantity="3", location="Bod")
+        self.app.start_location_tag_link("Bod")
+        self.app.touch_tag("restore-location-tag")
         backup = self.app.create_backup_payload()
         self.app.delete_item(original["id"])
         self.create_item("Midlertidig")
@@ -250,6 +318,10 @@ class HjemmelagerTests(unittest.TestCase):
         restored = self.app.list_items()
         self.assertEqual([item["name"] for item in restored], ["Original"])
         self.assertEqual(restored[0]["quantity"], 3)
+        self.assertEqual(
+            self.app.get_location_tag("Bod")["tag_id"],
+            "restore-location-tag",
+        )
         before_path = Path(self.temp_dir.name) / result["before_filename"]
         self.assertTrue(before_path.is_file())
         before_payload = json.loads(before_path.read_text(encoding="utf-8"))
@@ -730,7 +802,10 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertIn('class="skip-link"', content)
         self.assertIn('id="main-content" tabindex="-1"', content)
         self.assertIn('class="app-version"', content)
-        self.assertIn('aria-label="Versjon 1.1.0"', content)
+        self.assertIn(
+            f'aria-label="Versjon {self.app.APP_VERSION}"',
+            content,
+        )
         self.assertIn('role="status" aria-live="polite"', content)
         self.assertIn("prefers-reduced-motion", content)
 
