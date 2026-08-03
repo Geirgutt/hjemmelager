@@ -106,9 +106,11 @@ Flyt:
 3. Scan QR-kode eller strekkode.
 4. Hvis koden finnes på en vare, åpnes varen.
 5. Hvis koden er ukjent, åpnes ny vare med koden ferdig utfylt.
-6. For vanlige produktstrekkoder forsøker Hjemmelager å hente navn, merke og produktbilde fra Open Food Facts. Hvis produktet eller nettet ikke er tilgjengelig, fylles varen inn manuelt som før.
+6. For vanlige produktstrekkoder forsøker Hjemmelager å hente navn, merke, produktbilde og næringsinnhold fra Open Food Facts. Hvis produktet eller nettet ikke er tilgjengelig, fylles varen inn manuelt som før.
 
-Produktoppslaget er gratis og krever ingen konto, men Raspberry Pi-en må kunne kontakte `world.openfoodfacts.org`. Produktdataene kommer fra [Open Food Facts](https://world.openfoodfacts.org/) under Open Database License. Bildet lastes ned én gang og lagres sammen med varen, slik at visningen ikke er avhengig av nettet senere.
+Produktoppslaget er gratis og krever ingen konto, men Raspberry Pi-en må kunne kontakte `world.openfoodfacts.org`. Produktdataene kommer fra [Open Food Facts](https://world.openfoodfacts.org/) under Open Database License. Bildet lastes ned én gang, og næringsinnholdet lagres sammen med varen, slik at visningen ikke er avhengig av nettet senere.
+
+Open Food Facts er brukerdrevet. Lenken **Registrer eller rediger hos Open Food Facts** åpner produktsiden for den aktuelle strekkoden, der du kan logge inn og legge til eller korrigere produktdata og egne bilder av emballasjen. Etter en rettelse bruker du **Hent på nytt** i Hjemmelager. Knappen omgår det vanlige 24-timers mellomlageret og henter ferske data direkte. Verdiene vises i formularen før lagring, slik at lokale rettelser ikke overskrives uten at du kontrollerer og lagrer varen.
 
 QR-koder som inneholder en Hjemmelager-vare-URL, for eksempel `/item/12`, åpner varen direkte.
 
@@ -121,6 +123,8 @@ Trykk **Ny** og velg den korteste veien:
 3. **Legg inn en gjenstand** brukes for verktøy, utstyr og andre ting.
 
 Bilde, lagergrenser, plassering, kategori og tekniske koder ligger i valgfrie seksjoner. Etter lagring kan du koble NFC-tag, legge til flere detaljer eller registrere noe nytt.
+
+Lagreknappen vises også rett under de viktigste feltene, slik at en rask endring kan lagres uten å bla til bunnen. Hvis du har endret formularen og trykker på en meny, en annen intern lenke eller nettleserens tilbakeknapp, spør Hjemmelager om du vil **Lagre**, **Forkaste** eller **Bli her**. Ved lagring fortsetter appen til siden du valgte etter at varen er lagret. Nettleseren kan vise sin egen standardadvarsel hvis fanen lukkes eller siden lastes på nytt.
 
 ### Feilsøking for strekkode-scanning
 
@@ -146,6 +150,12 @@ For forbruksvarer kan du skille mellom uåpnede varer på lager og åpne pakker:
 2. **Åpne pakker** er pakker som er åpnet og normalt ikke skal regnes som lager, for eksempel `1 åpen`.
 3. **Åpne pakke** flytter én fra uåpnet lager til åpne pakker.
 4. **Bruk åpen** reduserer antall åpne pakker.
+
+## Næringsinnhold
+
+Forbruksvarer har en sammenleggbar seksjon for næringsinnhold. Den inneholder energi per 100 g/ml og per porsjon, porsjonsstørrelse og enhet, fett, mettet fett, karbohydrater, sukkerarter, protein, fiber og salt. Feltene fylles automatisk når Open Food Facts har data, men kan alltid åpnes og redigeres manuelt.
+
+Næringsverdiene lagres lokalt når varen lagres og følger med i Hjemmelagers JSON-sikkerhetskopi. Senere endringer hos Open Food Facts endrer ikke varen automatisk. Bruk **Hent på nytt**, kontroller verdiene i formularen og lagre for å ta inn en oppdatering.
 
 ## API
 
@@ -269,7 +279,7 @@ Hver godkjente versjon skal ha både versjonsnummer og kodenavn.
 Gjeldende versjon er:
 
 ```text
-0.5.0 - Trygg oversikt
+1.2.0 - Næring på lager
 ```
 
 Kontroller installert versjon på én av disse måtene:

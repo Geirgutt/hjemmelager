@@ -5,6 +5,7 @@ import html
 import io
 import json
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -26,8 +27,8 @@ except ImportError:
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "1.1.3"
-APP_CODENAME = "Samlet bekreftelse"
+APP_VERSION = "1.2.0"
+APP_CODENAME = "Næring på lager"
 TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
@@ -44,6 +45,18 @@ OPEN_FOOD_FACTS_USER_AGENT = (
 )
 PRODUCT_LOOKUP_CACHE = {}
 PRODUCT_LOOKUP_CACHE_SECONDS = 24 * 60 * 60
+NUTRITION_NUMBER_FIELDS = (
+    "energy_kcal_100g",
+    "energy_kcal_serving",
+    "serving_size",
+    "fat_100g",
+    "saturated_fat_100g",
+    "carbohydrates_100g",
+    "sugars_100g",
+    "fiber_100g",
+    "proteins_100g",
+    "salt_100g",
+)
 BACKUP_ITEM_COLUMNS = (
     "id",
     "name",
@@ -60,6 +73,7 @@ BACKUP_ITEM_COLUMNS = (
     "category",
     "tag_id",
     "barcode",
+    "nutrition_json",
     "image_url",
     "note",
     "shopping_enabled",
@@ -312,6 +326,7 @@ def init_db():
                 category text not null default '',
                 tag_id text unique,
                 barcode text not null default '',
+                nutrition_json text not null default '{}',
                 image_url text not null default '',
                 note text not null default '',
                 shopping_enabled integer not null default 1,
@@ -388,6 +403,8 @@ def init_db():
         columns = {row["name"] for row in conn.execute("pragma table_info(items)").fetchall()}
         if "barcode" not in columns:
             conn.execute("alter table items add column barcode text not null default ''")
+        if "nutrition_json" not in columns:
+            conn.execute("alter table items add column nutrition_json text not null default '{}'")
         if "opened_quantity" not in columns:
             conn.execute("alter table items add column opened_quantity real not null default 0")
         if "price" not in columns:
@@ -483,8 +500,55 @@ def merge_expiry_batches(batches, additions):
     return parse_expiry_batches(parse_expiry_batches(batches) + parse_expiry_batches(additions))
 
 
+def parse_nutrition(value):
+    try:
+        raw = json.loads(value or "{}") if isinstance(value, str) else dict(value or {})
+    except (TypeError, ValueError, json.JSONDecodeError):
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    nutrition = {}
+    for field in NUTRITION_NUMBER_FIELDS:
+        parsed = parse_optional_float(raw.get(field))
+        if parsed is not None:
+            nutrition[field] = max(0, parsed)
+    serving_unit = str(raw.get("serving_unit") or "").strip()
+    if serving_unit:
+        nutrition["serving_unit"] = serving_unit[:40]
+    return nutrition
+
+
+def nutrition_from_form(data):
+    nutrition = {}
+    for field in NUTRITION_NUMBER_FIELDS:
+        parsed = parse_optional_float(data.get(f"nutrition_{field}"))
+        if parsed is not None:
+            nutrition[field] = max(0, parsed)
+    serving_unit = (data.get("nutrition_serving_unit") or "").strip()
+    if serving_unit:
+        nutrition["serving_unit"] = serving_unit[:40]
+    return nutrition
+
+
+def serialize_nutrition(value):
+    return json.dumps(
+        parse_nutrition(value),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def nutrition_json_from_form(data, existing="{}"):
+    field_names = {f"nutrition_{field}" for field in NUTRITION_NUMBER_FIELDS}
+    field_names.add("nutrition_serving_unit")
+    if not any(field in data for field in field_names):
+        return serialize_nutrition(existing)
+    return serialize_nutrition(nutrition_from_form(data))
+
+
 def row_to_item(row):
     item = dict(row)
+    item["nutrition"] = parse_nutrition(item.get("nutrition_json"))
     item["expiry_batches"] = parse_expiry_batches(item.get("expiry_batches_json"))
     item["dated_quantity"] = sum(
         float(batch["quantity"]) for batch in item["expiry_batches"]
@@ -750,6 +814,7 @@ def restore_backup_payload(payload):
         "category": "",
         "tag_id": None,
         "barcode": "",
+        "nutrition_json": "{}",
         "image_url": "",
         "note": "",
         "shopping_enabled": 1,
@@ -1084,6 +1149,15 @@ def parse_float(value, fallback=0.0):
         return fallback
 
 
+def parse_optional_float(value):
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        return float(str(value).replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+
+
 def esc(value):
     return html.escape("" if value is None else str(value), quote=True)
 
@@ -1215,8 +1289,8 @@ def create_item(data):
             """
             insert into items (
                 name, kind, quantity, opened_quantity, unit, min_quantity, target_quantity, price, best_before, expiry_batches_json,
-                location, category, tag_id, barcode, image_url, note, shopping_enabled, created_at, updated_at
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                location, category, tag_id, barcode, nutrition_json, image_url, note, shopping_enabled, created_at, updated_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 (data.get("name") or "Uten navn").strip(),
@@ -1233,6 +1307,7 @@ def create_item(data):
                 category,
                 tag_id,
                 barcode,
+                nutrition_json_from_form(data),
                 image_value(data),
                 (data.get("note") or "").strip(),
                 1 if str(data.get("shopping_enabled", "1")).lower() in ("1", "true", "on", "yes") else 0,
@@ -1246,6 +1321,9 @@ def create_item(data):
 
 
 def new_item_redirect(item, data):
+    return_to = safe_form_return_target(data.get("return_to"))
+    if return_to:
+        return return_to
     if str(data.get("link_nfc_after_save", "0")).lower() in (
         "1",
         "true",
@@ -1255,6 +1333,24 @@ def new_item_redirect(item, data):
         start_tag_link(item["id"])
         return f"item/{item['id']}/tag-link"
     return f"item/{item['id']}?created=1"
+
+
+def safe_form_return_target(value):
+    value = str(value or "").strip()
+    if not value or len(value) > 1000 or "\r" in value or "\n" in value:
+        return ""
+    parsed = urlparse(value)
+    if parsed.scheme or parsed.netloc or value.startswith(("/", "\\")):
+        return ""
+    if parsed.path == ".":
+        return value
+    decoded_path = unquote(parsed.path)
+    if decoded_path.startswith(("/", "\\")) or "\\" in decoded_path:
+        return ""
+    path_parts = [part for part in decoded_path.split("/") if part]
+    if any(part in (".", "..") for part in path_parts):
+        return ""
+    return value
 
 
 def created_item_notice(item):
@@ -1313,7 +1409,7 @@ def update_item(item_id, data):
             update items set
                 name = ?, kind = ?, quantity = ?, opened_quantity = ?, unit = ?, min_quantity = ?, target_quantity = ?,
                 price = ?, best_before = ?, expiry_batches_json = ?,
-                location = ?, category = ?, tag_id = ?, barcode = ?, image_url = ?, note = ?,
+                location = ?, category = ?, tag_id = ?, barcode = ?, nutrition_json = ?, image_url = ?, note = ?,
                 shopping_enabled = ?, shopping_checked = 0, updated_at = ?
             where id = ?
             """,
@@ -1332,6 +1428,7 @@ def update_item(item_id, data):
                 category,
                 tag_id,
                 barcode,
+                nutrition_json_from_form(data, existing["nutrition_json"]),
                 image_value(data, existing["image_url"]),
                 (data.get("note") or "").strip(),
                 1 if str(data.get("shopping_enabled", "1")).lower() in ("1", "true", "on", "yes") else 0,
@@ -1703,6 +1800,8 @@ def restore_deleted_item(deletion_id):
             tuple(
                 restored_expiry_batches
                 if column == "expiry_batches_json"
+                else item.get(column, "{}")
+                if column == "nutrition_json"
                 else item.get(column)
                 for column in BACKUP_ITEM_COLUMNS
             ),
@@ -2117,17 +2216,65 @@ def download_product_image(image_url):
     return f"data:{content_type};base64,{base64.b64encode(raw).decode('ascii')}"
 
 
-def lookup_product(barcode):
+def open_food_facts_product_url(barcode):
     barcode = (barcode or "").strip()
+    if not barcode.isdigit() or not 8 <= len(barcode) <= 14:
+        return ""
+    return f"{OPEN_FOOD_FACTS_BASE_URL}/product/{barcode}"
+
+
+def parse_serving_size(value):
+    match = re.match(r"^\s*(\d+(?:[.,]\d+)?)\s*(.*?)\s*$", str(value or ""))
+    if not match:
+        return {}
+    amount = parse_optional_float(match.group(1))
+    if amount is None:
+        return {}
+    result = {"serving_size": max(0, amount)}
+    unit = match.group(2).strip()
+    if unit:
+        result["serving_unit"] = unit[:40]
+    return result
+
+
+def product_nutrition(product):
+    nutriments = product.get("nutriments") or {}
+    field_map = {
+        "energy_kcal_100g": "energy-kcal_100g",
+        "energy_kcal_serving": "energy-kcal_serving",
+        "fat_100g": "fat_100g",
+        "saturated_fat_100g": "saturated-fat_100g",
+        "carbohydrates_100g": "carbohydrates_100g",
+        "sugars_100g": "sugars_100g",
+        "fiber_100g": "fiber_100g",
+        "proteins_100g": "proteins_100g",
+        "salt_100g": "salt_100g",
+    }
+    nutrition = parse_serving_size(product.get("serving_size"))
+    for local_field, source_field in field_map.items():
+        value = parse_optional_float(nutriments.get(source_field))
+        if value is not None:
+            nutrition[local_field] = max(0, value)
+    return parse_nutrition(nutrition)
+
+
+def lookup_product(barcode, force_refresh=False):
+    barcode = (barcode or "").strip()
+    source_url = open_food_facts_product_url(barcode)
     if not barcode.isdigit() or not 8 <= len(barcode) <= 14:
         return {
             "status": "not_applicable",
             "barcode": barcode,
+            "source_url": source_url,
             "message": "Koden ser ikke ut som en vanlig produktstrekkode.",
         }
 
     cached = PRODUCT_LOOKUP_CACHE.get(barcode)
-    if cached and cached["cached_at"] + PRODUCT_LOOKUP_CACHE_SECONDS > now():
+    if (
+        not force_refresh
+        and cached
+        and cached["cached_at"] + PRODUCT_LOOKUP_CACHE_SECONDS > now()
+    ):
         return cached["result"]
 
     fields = ",".join(
@@ -2138,6 +2285,8 @@ def lookup_product(barcode):
             "product_name_en",
             "brands",
             "quantity",
+            "serving_size",
+            "nutriments",
             "image_front_small_url",
         )
     )
@@ -2159,6 +2308,7 @@ def lookup_product(barcode):
         result = {
             "status": "not_found" if exc.code == 404 else "unavailable",
             "barcode": barcode,
+            "source_url": source_url,
             "message": (
                 "Fant ikke produktet i Open Food Facts. Fyll inn varen manuelt."
                 if exc.code == 404
@@ -2169,6 +2319,7 @@ def lookup_product(barcode):
         result = {
             "status": "unavailable",
             "barcode": barcode,
+            "source_url": source_url,
             "message": "Kunne ikke kontakte Open Food Facts. Du kan fylle inn varen manuelt.",
         }
     else:
@@ -2177,6 +2328,7 @@ def lookup_product(barcode):
             result = {
                 "status": "not_found",
                 "barcode": barcode,
+                "source_url": source_url,
                 "message": "Fant ikke produktet i Open Food Facts. Fyll inn varen manuelt.",
             }
         else:
@@ -2190,6 +2342,7 @@ def lookup_product(barcode):
                 result = {
                     "status": "not_found",
                     "barcode": barcode,
+                    "source_url": source_url,
                     "message": "Produktet mangler navn. Fyll inn varen manuelt.",
                 }
             else:
@@ -2200,11 +2353,12 @@ def lookup_product(barcode):
                     "name": product_name,
                     "brand": (product.get("brands") or "").split(",")[0].strip(),
                     "package_size": (product.get("quantity") or "").strip(),
+                    "nutrition": product_nutrition(product),
                     "image_data": image_data,
                     "suggested_category": "Matvarer",
                     "suggested_unit": "pk",
                     "source": "Open Food Facts",
-                    "source_url": f"https://world.openfoodfacts.org/product/{barcode}",
+                    "source_url": source_url,
                     "message": "Produktinformasjon ble funnet.",
                 }
 
@@ -2297,6 +2451,7 @@ def page(title, body, base_path=""):
       }}
     }}
     * {{ box-sizing: border-box; }}
+    [hidden] {{ display: none !important; }}
     html {{ scroll-behavior: smooth; }}
     body {{
       margin: 0;
@@ -3209,6 +3364,44 @@ def page(title, body, base_path=""):
     .form-card > p {{
       margin: -5px 0 0;
     }}
+    .form-top-save {{
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+    }}
+    .form-top-save .field-help {{
+      order: -1;
+      margin-right: auto;
+    }}
+    .unsaved-dialog {{
+      width: min(440px, calc(100% - 24px));
+      padding: 0;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      color: var(--text);
+      background: var(--panel);
+      box-shadow: 0 18px 50px rgb(15 23 42 / 22%);
+    }}
+    .unsaved-dialog::backdrop {{
+      background: rgb(15 23 42 / 48%);
+    }}
+    .unsaved-dialog-content {{
+      padding: 18px;
+    }}
+    .unsaved-dialog h2,
+    .unsaved-dialog p {{
+      margin: 0;
+    }}
+    .unsaved-dialog h2 {{
+      font-size: 1.1rem;
+    }}
+    .unsaved-dialog p {{
+      margin-top: 8px;
+      color: var(--muted);
+    }}
     .form-section {{
       padding: 0;
       overflow: clip;
@@ -3249,6 +3442,33 @@ def page(title, body, base_path=""):
     }}
     .form-section-content .form-grid {{
       padding-top: 14px;
+    }}
+    .nutrition-lookup {{
+      display: grid;
+      gap: 8px;
+      padding-top: 4px;
+    }}
+    .nutrition-lookup p {{
+      margin: 0;
+    }}
+    .nutrition-table {{
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      margin: 14px 0 0;
+    }}
+    .nutrition-table dt,
+    .nutrition-table dd {{
+      margin: 0;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--line);
+    }}
+    .nutrition-table dd {{
+      padding-left: 16px;
+      font-weight: 700;
+      text-align: right;
+    }}
+    .nutrition-details .actions {{
+      padding-top: 12px;
     }}
     .field-help {{
       color: var(--muted);
@@ -3541,6 +3761,24 @@ def page(title, body, base_path=""):
       }}
       main {{
         padding: 8px 12px 12px;
+      }}
+      .form-top-save {{
+        align-items: stretch;
+        flex-direction: column;
+      }}
+      .form-top-save .field-help {{
+        order: 0;
+        margin: 0;
+      }}
+      .form-top-save .btn {{
+        width: 100%;
+      }}
+      .unsaved-dialog .actions {{
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+      }}
+      .unsaved-dialog .actions .btn:last-child {{
+        grid-column: 1 / -1;
       }}
       footer {{
         display: none !important;
@@ -4265,6 +4503,124 @@ def new_item_start_page():
     """
 
 
+def nutrition_form_section(item, is_thing=False):
+    nutrition = item.get("nutrition") or {}
+
+    def value(field):
+        raw = nutrition.get(field)
+        return "" if raw is None else esc(fmt_num(raw))
+
+    source_url = open_food_facts_product_url(item.get("barcode"))
+    source_hidden = "" if source_url else "hidden"
+    return f"""
+      <details class="card form-section" {"hidden" if is_thing else ""}>
+        <summary>
+          <span class="form-section-summary">
+            Næringsinnhold
+            <small id="nutrition-summary">Per 100 g/ml og per porsjon</small>
+          </span>
+        </summary>
+        <div class="form-section-content">
+          <div class="form-grid">
+            <label>Energi per 100 g/ml
+              <input id="nutrition-energy-kcal-100g" name="nutrition_energy_kcal_100g" type="number" min="0" step="0.01" inputmode="decimal" value="{value('energy_kcal_100g')}" placeholder="kcal">
+            </label>
+            <label>Energi per porsjon
+              <input id="nutrition-energy-kcal-serving" name="nutrition_energy_kcal_serving" type="number" min="0" step="0.01" inputmode="decimal" value="{value('energy_kcal_serving')}" placeholder="kcal">
+            </label>
+            <label>Porsjonsstørrelse
+              <input id="nutrition-serving-size" name="nutrition_serving_size" type="number" min="0" step="0.01" inputmode="decimal" value="{value('serving_size')}" placeholder="For eksempel 30">
+            </label>
+            <label>Porsjonsenhet
+              <input id="nutrition-serving-unit" name="nutrition_serving_unit" value="{esc(nutrition.get('serving_unit', ''))}" placeholder="g, ml eller stk">
+            </label>
+            <label>Fett per 100 g/ml
+              <input id="nutrition-fat-100g" name="nutrition_fat_100g" type="number" min="0" step="0.01" inputmode="decimal" value="{value('fat_100g')}" placeholder="g">
+            </label>
+            <label>Mettet fett per 100 g/ml
+              <input id="nutrition-saturated-fat-100g" name="nutrition_saturated_fat_100g" type="number" min="0" step="0.01" inputmode="decimal" value="{value('saturated_fat_100g')}" placeholder="g">
+            </label>
+            <label>Karbohydrater per 100 g/ml
+              <input id="nutrition-carbohydrates-100g" name="nutrition_carbohydrates_100g" type="number" min="0" step="0.01" inputmode="decimal" value="{value('carbohydrates_100g')}" placeholder="g">
+            </label>
+            <label>Sukkerarter per 100 g/ml
+              <input id="nutrition-sugars-100g" name="nutrition_sugars_100g" type="number" min="0" step="0.01" inputmode="decimal" value="{value('sugars_100g')}" placeholder="g">
+            </label>
+            <label>Protein per 100 g/ml
+              <input id="nutrition-proteins-100g" name="nutrition_proteins_100g" type="number" min="0" step="0.01" inputmode="decimal" value="{value('proteins_100g')}" placeholder="g">
+            </label>
+            <label>Fiber per 100 g/ml
+              <input id="nutrition-fiber-100g" name="nutrition_fiber_100g" type="number" min="0" step="0.01" inputmode="decimal" value="{value('fiber_100g')}" placeholder="g">
+            </label>
+            <label>Salt per 100 g/ml
+              <input id="nutrition-salt-100g" name="nutrition_salt_100g" type="number" min="0" step="0.01" inputmode="decimal" value="{value('salt_100g')}" placeholder="g">
+            </label>
+            <div class="full nutrition-lookup">
+              <p class="field-help" id="nutrition-lookup-status">Verdiene lagres lokalt når du lagrer varen.</p>
+              <div class="actions">
+                <button class="btn" id="nutrition-refresh" type="button">Hent på nytt</button>
+                <a class="btn" id="open-food-facts-link" href="{esc(source_url)}" target="_blank" rel="noopener" {source_hidden}>Registrer eller rediger hos Open Food Facts</a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </details>
+    """
+
+
+def nutrition_details_panel(item):
+    if item["kind"] != "consumable":
+        return ""
+    nutrition = item.get("nutrition") or {}
+    labels = (
+        ("energy_kcal_100g", "Energi per 100 g/ml", "kcal"),
+        ("energy_kcal_serving", "Energi per porsjon", "kcal"),
+        ("fat_100g", "Fett per 100 g/ml", "g"),
+        ("saturated_fat_100g", "Mettet fett per 100 g/ml", "g"),
+        ("carbohydrates_100g", "Karbohydrater per 100 g/ml", "g"),
+        ("sugars_100g", "Sukkerarter per 100 g/ml", "g"),
+        ("proteins_100g", "Protein per 100 g/ml", "g"),
+        ("fiber_100g", "Fiber per 100 g/ml", "g"),
+        ("salt_100g", "Salt per 100 g/ml", "g"),
+    )
+    rows = []
+    serving_size = nutrition.get("serving_size")
+    if serving_size is not None:
+        serving = f"{fmt_num(serving_size)} {nutrition.get('serving_unit', '')}".strip()
+        rows.append(f"<dt>Porsjon</dt><dd>{esc(serving)}</dd>")
+    for field, label, unit in labels:
+        if field in nutrition:
+            rows.append(f"<dt>{label}</dt><dd>{fmt_num(nutrition[field])} {unit}</dd>")
+    source_url = open_food_facts_product_url(item.get("barcode"))
+    source_link = (
+        f'<a class="btn" href="{esc(source_url)}" target="_blank" rel="noopener">'
+        "Registrer eller rediger hos Open Food Facts</a>"
+        if source_url
+        else ""
+    )
+    if not rows and not source_link:
+        return ""
+    content = (
+        f'<dl class="nutrition-table">{"".join(rows)}</dl>'
+        if rows
+        else '<p class="muted">Ingen næringsverdier er lagret ennå.</p>'
+    )
+    return f"""
+      <details class="card form-section nutrition-details">
+        <summary>
+          <span class="form-section-summary">
+            Næringsinnhold
+            <small>Lokalt lagrede produktdata</small>
+          </span>
+        </summary>
+        <div class="form-section-content">
+          {content}
+          {f'<div class="actions">{source_link}</div>' if source_link else ''}
+        </div>
+      </details>
+    """
+
+
 def item_form(item=None, tag_id="", barcode="", kind="consumable"):
     is_new = item is None
     kind = kind if kind in ("consumable", "thing") else "consumable"
@@ -4283,6 +4639,7 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
         "category": "",
         "tag_id": tag_id,
         "barcode": barcode,
+        "nutrition": {},
         "image_url": "",
         "note": "",
         "shopping_enabled": 1,
@@ -4296,6 +4653,7 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
     image_url = "" if str(item["image_url"]).startswith("data:") else item["image_url"]
     preview_src = item["image_url"] or ""
     preview_hidden = "" if preview_src else "hidden"
+    nutrition_section = nutrition_form_section(item, is_thing)
     categories = distinct_values("category")
     locations = distinct_values("location")
     barcode_step = ""
@@ -4408,7 +4766,8 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
         """
     )
     return f"""
-    <form class="stack" method="post" action="{action}" enctype="multipart/form-data">
+    <form class="stack" id="item-form" method="post" action="{action}" enctype="multipart/form-data">
+      <input id="item-form-return-to" name="return_to" type="hidden" value="">
       <section class="card form-card">
         <h2>Det viktigste</h2>
         <p class="muted">Navn er nok. Alt annet kan legges til senere.</p>
@@ -4423,9 +4782,15 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
           </label>
           {location_field}
         </div>
+        <div class="form-top-save">
+          <button class="btn primary" id="item-form-top-save" type="submit">{save_label}</button>
+          <span class="field-help">Lagrer alle endringene i skjemaet.</span>
+        </div>
       </section>
 
       {image_section}
+
+      {nutrition_section}
 
       <details class="card form-section" {"hidden" if is_thing else ""}>
         <summary>
@@ -4496,7 +4861,7 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
         <div class="form-section-content">
           <div class="form-grid">
             <label class="full">Strekkode eller QR-kode
-              <input name="barcode" value="{esc(item['barcode'] or '')}" placeholder="Kan legges til via Scan">
+              <input id="item-barcode" name="barcode" value="{esc(item['barcode'] or '')}" placeholder="Kan legges til via Scan">
             </label>
             <label class="full">Home Assistant Tag-ID
               <input name="tag_id" value="{esc(item['tag_id'] or '')}" placeholder="Valgfritt">
@@ -4526,11 +4891,156 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
       </details>
 
       <div class="actions">
-        <button class="btn primary">{save_label}</button>
+        <button class="btn primary" type="submit">{save_label}</button>
         <a class="btn" href=".">Avbryt</a>
       </div>
     </form>
+    <dialog class="unsaved-dialog" id="unsaved-changes-dialog" aria-labelledby="unsaved-dialog-title">
+      <div class="unsaved-dialog-content">
+        <h2 id="unsaved-dialog-title">Du har ulagrede endringer</h2>
+        <p>Vil du lagre før du går videre, forkaste endringene eller bli på siden?</p>
+        <div class="actions">
+          <button class="btn primary" id="unsaved-save" type="button">Lagre</button>
+          <button class="btn danger" id="unsaved-discard" type="button">Forkast</button>
+          <button class="btn" id="unsaved-stay" type="button">Bli her</button>
+        </div>
+      </div>
+    </dialog>
     <script>
+      const itemForm = document.getElementById("item-form");
+      const itemFormReturnTo = document.getElementById("item-form-return-to");
+      const itemFormTopSave = document.getElementById("item-form-top-save");
+      const unsavedDialog = document.getElementById("unsaved-changes-dialog");
+      const unsavedSave = document.getElementById("unsaved-save");
+      const unsavedDiscard = document.getElementById("unsaved-discard");
+      const unsavedStay = document.getElementById("unsaved-stay");
+      let itemFormDirty = false;
+      let itemFormSubmitting = false;
+      let unsavedHistoryGuard = false;
+      let pendingNavigation = null;
+
+      function appRelativeTarget(urlValue) {{
+        try {{
+          const appBase = new URL(document.baseURI);
+          const target = new URL(urlValue, document.baseURI);
+          if (target.origin !== appBase.origin || !target.pathname.startsWith(appBase.pathname)) {{
+            return "";
+          }}
+          const relativePath = target.pathname.slice(appBase.pathname.length);
+          return (relativePath || ".") + target.search + target.hash;
+        }} catch (error) {{
+          return "";
+        }}
+      }}
+
+      function markItemFormDirty() {{
+        if (itemFormDirty || itemFormSubmitting) return;
+        itemFormDirty = true;
+        try {{
+          history.pushState({{ unsavedItemForm: true }}, "", window.location.href);
+          unsavedHistoryGuard = true;
+        }} catch (error) {{
+          unsavedHistoryGuard = false;
+        }}
+      }}
+
+      function closeUnsavedDialog() {{
+        if (unsavedDialog?.open) unsavedDialog.close();
+      }}
+
+      function discardAndNavigate() {{
+        const navigation = pendingNavigation;
+        pendingNavigation = null;
+        itemFormDirty = false;
+        itemFormSubmitting = true;
+        closeUnsavedDialog();
+        if (navigation?.type === "link") {{
+          window.location.href = navigation.href;
+        }} else if (navigation?.type === "history") {{
+          history.go(unsavedHistoryGuard ? -2 : -1);
+        }}
+      }}
+
+      function showUnsavedChanges(navigation) {{
+        pendingNavigation = navigation;
+        if (typeof unsavedDialog?.showModal === "function") {{
+          if (!unsavedDialog.open) unsavedDialog.showModal();
+          return;
+        }}
+        if (window.confirm("Du har ulagrede endringer. Vil du forkaste dem?")) {{
+          discardAndNavigate();
+        }} else {{
+          pendingNavigation = null;
+        }}
+      }}
+
+      itemForm?.addEventListener("input", markItemFormDirty);
+      itemForm?.addEventListener("change", markItemFormDirty);
+      itemForm?.addEventListener("submit", () => {{
+        itemFormSubmitting = true;
+        itemFormDirty = false;
+      }});
+
+      document.addEventListener("click", (event) => {{
+        if (!itemFormDirty || itemFormSubmitting || event.defaultPrevented) return;
+        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        const link = event.target.closest("a[href]");
+        if (!link || link.target === "_blank" || link.hasAttribute("download")) return;
+        const target = new URL(link.href, document.baseURI);
+        if (target.pathname === window.location.pathname &&
+            target.search === window.location.search && target.hash) return;
+        event.preventDefault();
+        showUnsavedChanges({{
+          type: "link",
+          href: target.href,
+          returnTo: appRelativeTarget(target.href)
+        }});
+      }});
+
+      window.addEventListener("popstate", () => {{
+        if (!itemFormDirty || itemFormSubmitting) return;
+        try {{
+          history.pushState({{ unsavedItemForm: true }}, "", window.location.href);
+          unsavedHistoryGuard = true;
+        }} catch (error) {{
+          unsavedHistoryGuard = false;
+        }}
+        showUnsavedChanges({{
+          type: "history",
+          returnTo: appRelativeTarget(document.referrer)
+        }});
+      }});
+
+      window.addEventListener("beforeunload", (event) => {{
+        if (!itemFormDirty || itemFormSubmitting) return;
+        event.preventDefault();
+        event.returnValue = "";
+      }});
+
+      unsavedSave?.addEventListener("click", () => {{
+        if (!itemForm?.reportValidity()) {{
+          closeUnsavedDialog();
+          pendingNavigation = null;
+          return;
+        }}
+        if (itemFormReturnTo) {{
+          itemFormReturnTo.value = pendingNavigation?.returnTo || "";
+        }}
+        closeUnsavedDialog();
+        itemForm.requestSubmit(itemFormTopSave || undefined);
+      }});
+      unsavedDiscard?.addEventListener("click", discardAndNavigate);
+      unsavedStay?.addEventListener("click", () => {{
+        pendingNavigation = null;
+        if (itemFormReturnTo) itemFormReturnTo.value = "";
+        closeUnsavedDialog();
+      }});
+      unsavedDialog?.addEventListener("cancel", (event) => {{
+        event.preventDefault();
+        pendingNavigation = null;
+        closeUnsavedDialog();
+      }});
+
       const kindSelect = document.getElementById("item-kind");
       const barcodeStep = document.getElementById("barcode-step");
       function updateBarcodeStep() {{
@@ -4588,22 +5098,93 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
         }}
       }});
 
-      const lookupBarcode = {json.dumps(item["barcode"] if is_new else "")};
+      const initialLookupBarcode = {json.dumps(item["barcode"] if is_new else "")};
+      const openFoodFactsBaseUrl = {json.dumps(OPEN_FOOD_FACTS_BASE_URL)};
+      const hasStoredImage = {json.dumps(bool(item["image_url"]))};
+      const barcodeInput = document.getElementById("item-barcode");
       const suggestion = document.getElementById("product-suggestion");
-      async function lookupProduct() {{
-        if (!lookupBarcode || !suggestion) return;
+      const refreshProductButton = document.getElementById("nutrition-refresh");
+      const nutritionLookupStatus = document.getElementById("nutrition-lookup-status");
+      const nutritionSummary = document.getElementById("nutrition-summary");
+      const openFoodFactsLink = document.getElementById("open-food-facts-link");
+      const nutritionFields = {{
+        energy_kcal_100g: "nutrition-energy-kcal-100g",
+        energy_kcal_serving: "nutrition-energy-kcal-serving",
+        serving_size: "nutrition-serving-size",
+        serving_unit: "nutrition-serving-unit",
+        fat_100g: "nutrition-fat-100g",
+        saturated_fat_100g: "nutrition-saturated-fat-100g",
+        carbohydrates_100g: "nutrition-carbohydrates-100g",
+        sugars_100g: "nutrition-sugars-100g",
+        proteins_100g: "nutrition-proteins-100g",
+        fiber_100g: "nutrition-fiber-100g",
+        salt_100g: "nutrition-salt-100g"
+      }};
+
+      function currentProductBarcode() {{
+        return (barcodeInput?.value || initialLookupBarcode || "").trim();
+      }}
+
+      function updateOpenFoodFactsLink(sourceUrl = "") {{
+        if (!openFoodFactsLink) return;
+        const barcode = currentProductBarcode();
+        const isProductBarcode = /^\\d{{8,14}}$/.test(barcode);
+        openFoodFactsLink.hidden = !isProductBarcode;
+        openFoodFactsLink.href = sourceUrl || (isProductBarcode
+          ? openFoodFactsBaseUrl + "/product/" + encodeURIComponent(barcode)
+          : "");
+      }}
+
+      function fillNutrition(nutrition) {{
+        let filledCount = 0;
+        for (const [field, inputId] of Object.entries(nutritionFields)) {{
+          if (!Object.prototype.hasOwnProperty.call(nutrition || {{}}, field)) continue;
+          const input = document.getElementById(inputId);
+          if (!input) continue;
+          input.value = nutrition[field];
+          filledCount += 1;
+        }}
+        if (filledCount && nutritionSummary) {{
+          nutritionSummary.textContent = "Hentet fra Open Food Facts – kontroller før lagring";
+        }}
+        return filledCount;
+      }}
+
+      async function lookupProduct(forceRefresh = false) {{
+        const lookupBarcode = currentProductBarcode();
+        updateOpenFoodFactsLink();
+        if (!lookupBarcode) {{
+          if (nutritionLookupStatus) nutritionLookupStatus.textContent = "Legg inn en strekkode først.";
+          return;
+        }}
         const title = document.getElementById("product-suggestion-title");
         const detail = document.getElementById("product-suggestion-detail");
         const source = document.getElementById("product-suggestion-source");
+        if (refreshProductButton) {{
+          refreshProductButton.disabled = true;
+          refreshProductButton.textContent = "Henter …";
+        }}
+        if (nutritionLookupStatus) {{
+          nutritionLookupStatus.textContent = forceRefresh
+            ? "Henter ferske produktdata …"
+            : "Henter produktdata …";
+        }}
         try {{
           const response = await fetch(
-            "api/product-lookup?barcode=" + encodeURIComponent(lookupBarcode),
+            "api/product-lookup?barcode=" + encodeURIComponent(lookupBarcode) +
+              (forceRefresh ? "&refresh=1" : ""),
             {{ headers: {{ "Accept": "application/json" }}, cache: "no-store" }}
           );
           const product = await response.json();
+          updateOpenFoodFactsLink(product.source_url || "");
           if (product.status !== "found") {{
-            title.textContent = "Fyll inn produktet manuelt";
-            detail.textContent = product.message || "Fant ikke produktet.";
+            if (title) title.textContent = "Fyll inn produktet manuelt";
+            if (detail) detail.textContent = product.message || "Fant ikke produktet.";
+            if (nutritionLookupStatus) {{
+              nutritionLookupStatus.textContent =
+                (product.message || "Fant ikke produktet.") +
+                " Du kan registrere eller redigere det hos Open Food Facts.";
+            }}
             return;
           }}
 
@@ -4612,7 +5193,7 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
           const categorySelect = document.getElementById("item-category");
           const newCategoryInput = document.getElementById("item-new-category");
           const imageUrlInput = document.getElementById("item-image-url");
-          if (!nameInput.value.trim()) nameInput.value = product.name || "";
+          if (nameInput && !nameInput.value.trim()) nameInput.value = product.name || "";
           if (unitInput && unitInput.value.trim() === "stk") {{
             unitInput.value = product.suggested_unit || "pk";
           }}
@@ -4625,7 +5206,7 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
               newCategoryInput.value = product.suggested_category;
             }}
           }}
-          if (imageUrlInput && product.image_data && !imageUrlInput.value) {{
+          if (imageUrlInput && product.image_data && !imageUrlInput.value && !hasStoredImage) {{
             imageUrlInput.value = product.image_data;
             const oldPreview = document.getElementById("product-suggestion-placeholder");
             const preview = document.createElement("img");
@@ -4636,22 +5217,49 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
             oldPreview?.replaceWith(preview);
           }}
 
-          title.textContent = product.name;
+          const nutritionCount = fillNutrition(product.nutrition || {{}});
+          if (title) title.textContent = product.name;
           const productFacts = [product.brand, product.package_size].filter(Boolean).join(" · ");
           const filled = ["navn", "enhet", "kategori"];
           if (product.image_data) filled.push("bilde");
-          detail.textContent =
-            (productFacts ? productFacts + ". " : "") +
-            "Vi fylte inn " + filled.join(", ") + ". Kontroller og lagre.";
-          source.innerHTML =
-            'Produktdata fra <a href="' + product.source_url +
-            '" target="_blank" rel="noopener">Open Food Facts</a>';
+          if (nutritionCount) filled.push("næringsinnhold");
+          if (detail) {{
+            detail.textContent =
+              (productFacts ? productFacts + ". " : "") +
+              "Vi fylte inn " + filled.join(", ") + ". Kontroller og lagre.";
+          }}
+          if (source) {{
+            source.replaceChildren("Produktdata fra ");
+            const sourceAnchor = document.createElement("a");
+            sourceAnchor.href = product.source_url;
+            sourceAnchor.target = "_blank";
+            sourceAnchor.rel = "noopener";
+            sourceAnchor.textContent = "Open Food Facts";
+            source.append(sourceAnchor);
+          }}
+          if (nutritionLookupStatus) {{
+            nutritionLookupStatus.textContent = nutritionCount
+              ? "Ferske produktdata er hentet. Kontroller verdiene og lagre varen."
+              : "Produktet ble funnet, men mangler næringsinnhold. Du kan registrere det hos Open Food Facts.";
+          }}
+          markItemFormDirty();
         }} catch (error) {{
-          title.textContent = "Fyll inn produktet manuelt";
-          detail.textContent = "Produktoppslaget er ikke tilgjengelig akkurat nå.";
+          if (title) title.textContent = "Fyll inn produktet manuelt";
+          if (detail) detail.textContent = "Produktoppslaget er ikke tilgjengelig akkurat nå.";
+          if (nutritionLookupStatus) {{
+            nutritionLookupStatus.textContent = "Kunne ikke hente produktdata akkurat nå.";
+          }}
+        }} finally {{
+          if (refreshProductButton) {{
+            refreshProductButton.disabled = false;
+            refreshProductButton.textContent = "Hent på nytt";
+          }}
         }}
       }}
-      lookupProduct();
+      barcodeInput?.addEventListener("input", () => updateOpenFoodFactsLink());
+      refreshProductButton?.addEventListener("click", () => lookupProduct(true));
+      updateOpenFoodFactsLink();
+      if (initialLookupBarcode) lookupProduct(false);
     </script>
     """
 
@@ -5906,6 +6514,7 @@ class Handler(BaseHTTPRequestHandler):
                     else ""
                 )
                 expiry_panel = expiry_batches_panel(item)
+                nutrition_panel = nutrition_details_panel(item)
                 tag_action_label = "Bytt NFC-tag" if item["tag_id"] else "Koble NFC-tag"
                 shopping_toggle = (
                     f"""
@@ -5984,6 +6593,7 @@ class Handler(BaseHTTPRequestHandler):
                     </div>
                     {expiry_panel}
                   </div>
+                  {nutrition_panel}
                   <details class="card danger-zone">
                     <summary>Flere valg</summary>
                     <div class="danger-zone-content">
@@ -6094,7 +6704,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "api/product-lookup":
             query = parse_qs(urlparse(self.path).query)
             barcode = (query.get("barcode") or [""])[0]
-            self.send_json(lookup_product(barcode))
+            force_refresh = (query.get("refresh") or ["0"])[0] == "1"
+            self.send_json(lookup_product(barcode, force_refresh=force_refresh))
             return
 
         if path == "api/version":
@@ -6382,7 +6993,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not item:
                     self.send_html("Ikke funnet", "<h1>Ikke funnet</h1>", HTTPStatus.NOT_FOUND)
                     return
-                self.redirect(f"item/{item['id']}")
+                self.redirect(
+                    safe_form_return_target(data.get("return_to"))
+                    or f"item/{item['id']}"
+                )
                 return
 
         if (

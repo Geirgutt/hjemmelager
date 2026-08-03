@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.0 - Næring på lager
+
+- Henter energi, porsjonsstørrelse, fett, karbohydrater, sukkerarter, protein, fiber og salt fra Open Food Facts når dataene finnes.
+- Lagrer næringsinnhold lokalt og gjør alle verdier redigerbare i en sammenleggbar seksjon på vareformularen.
+- Legger til «Hent på nytt», som omgår det 24-timers produktmellomlageret, og en tydelig lenke for registrering eller redigering hos Open Food Facts.
+- Viser lagreknappen rett under de viktigste feltene og spør om endringer skal lagres, forkastes eller beholdes ved navigasjon bort fra formularen.
+
 ## 1.1.3 - Samlet bekreftelse
 
 - Samler raske `+`- og `−`-trykk på samme vare til én bekreftelse, for eksempel `Melk: fra 1 til 10`.

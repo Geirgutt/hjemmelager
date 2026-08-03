@@ -296,6 +296,10 @@ class HjemmelagerTests(unittest.TestCase):
             location="Bod",
             category="Test",
             image_url="data:image/jpeg;base64,ZmFrZQ==",
+            nutrition_energy_kcal_100g="245",
+            nutrition_proteins_100g="8.5",
+            nutrition_serving_size="30",
+            nutrition_serving_unit="g",
         )
         self.app.adjust_item(item["id"], 2, "backup-test")
         self.app.start_location_tag_link("Bod")
@@ -306,6 +310,9 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertEqual(backup["format_version"], 1)
         self.assertEqual(backup["data"]["items"][0]["name"], "Backupvare")
         self.assertTrue(backup["data"]["items"][0]["image_url"].startswith("data:image/"))
+        saved_nutrition = json.loads(backup["data"]["items"][0]["nutrition_json"])
+        self.assertEqual(saved_nutrition["energy_kcal_100g"], 245)
+        self.assertEqual(saved_nutrition["serving_unit"], "g")
         self.assertEqual(backup["data"]["locations"][0]["name"], "Bod")
         self.assertEqual(backup["data"]["location_tags"][0]["tag_id"], "storage-tag")
         self.assertEqual(backup["data"]["categories"][0]["name"], "Test")
@@ -573,6 +580,41 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertIn('filled.push("bilde")', content)
         self.assertIn("Kontroller og lagre", content)
 
+    def test_nutrition_form_is_collapsed_with_manual_and_refresh_controls(self):
+        content = self.app.item_form(barcode="1234567890123")
+
+        self.assertIn("Næringsinnhold", content)
+        self.assertIn('name="nutrition_energy_kcal_100g"', content)
+        self.assertIn('name="nutrition_energy_kcal_serving"', content)
+        self.assertIn('name="nutrition_carbohydrates_100g"', content)
+        self.assertIn('id="nutrition-refresh"', content)
+        self.assertIn("Registrer eller rediger hos Open Food Facts", content)
+        self.assertIn('(forceRefresh ? "&refresh=1" : "")', content)
+
+    def test_nutrition_is_stored_locally_and_preserved_on_partial_update(self):
+        item = self.create_item(
+            "Havregryn",
+            nutrition_energy_kcal_100g="370",
+            nutrition_fat_100g="7",
+            nutrition_proteins_100g="13,2",
+            nutrition_serving_size="40",
+            nutrition_serving_unit="g",
+        )
+
+        self.assertEqual(item["nutrition"]["energy_kcal_100g"], 370)
+        self.assertEqual(item["nutrition"]["proteins_100g"], 13.2)
+        updated = self.app.update_item(
+            item["id"],
+            {
+                "name": "Havregryn fin",
+                "kind": "consumable",
+                "quantity": "1",
+                "unit": "stk",
+                "shopping_enabled": "1",
+            },
+        )
+        self.assertEqual(updated["nutrition"], item["nutrition"])
+
     def test_image_picker_does_not_force_camera(self):
         form = self.app.item_form()
 
@@ -604,6 +646,42 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertIn("Koble NFC-tag", notice)
         self.assertIn("Legg til detaljer", notice)
         self.assertIn("Legg til en ny", notice)
+
+    def test_item_form_has_top_save_and_unsaved_changes_dialog(self):
+        content = self.app.item_form(kind="consumable")
+
+        self.assertIn('id="item-form-top-save"', content)
+        self.assertIn('id="item-form-return-to"', content)
+        self.assertIn("Du har ulagrede endringer", content)
+        self.assertIn('id="unsaved-save"', content)
+        self.assertIn('id="unsaved-discard"', content)
+        self.assertIn('id="unsaved-stay"', content)
+        self.assertIn('window.addEventListener("popstate"', content)
+        self.assertIn('window.addEventListener("beforeunload"', content)
+
+    def test_form_can_save_before_safe_internal_navigation(self):
+        item = self.create_item("Navigasjonsvare")
+
+        self.assertEqual(
+            self.app.new_item_redirect(item, {"return_to": "organize"}),
+            "organize",
+        )
+        self.assertEqual(
+            self.app.safe_form_return_target(".?kind=all"),
+            ".?kind=all",
+        )
+        self.assertEqual(
+            self.app.safe_form_return_target("item/12?changed=1"),
+            "item/12?changed=1",
+        )
+        self.assertEqual(self.app.safe_form_return_target("../organize"), "")
+        self.assertEqual(self.app.safe_form_return_target("%2e%2e/organize"), "")
+        self.assertEqual(self.app.safe_form_return_target("item%5c..%5corganize"), "")
+        self.assertEqual(self.app.safe_form_return_target("/organize"), "")
+        self.assertEqual(
+            self.app.safe_form_return_target("https://example.com/"),
+            "",
+        )
 
     def test_multipart_image_is_saved_on_new_item(self):
         boundary = "hjemmelager-test-boundary"
@@ -682,6 +760,18 @@ class HjemmelagerTests(unittest.TestCase):
                     "product_name_no": "Testpålegg",
                     "brands": "Testmerket",
                     "quantity": "250 g",
+                    "serving_size": "25 g",
+                    "nutriments": {
+                        "energy-kcal_100g": 220,
+                        "energy-kcal_serving": 55,
+                        "fat_100g": 12.5,
+                        "saturated-fat_100g": 3.1,
+                        "carbohydrates_100g": 8,
+                        "sugars_100g": 2.4,
+                        "fiber_100g": 1.2,
+                        "proteins_100g": 15,
+                        "salt_100g": 0.8,
+                    },
                     "image_front_small_url": (
                         "https://images.openfoodfacts.org/images/products/test.200.jpg"
                     ),
@@ -700,7 +790,49 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertEqual(product["status"], "found")
         self.assertEqual(product["name"], "Testpålegg")
         self.assertEqual(product["brand"], "Testmerket")
+        self.assertEqual(product["nutrition"]["energy_kcal_100g"], 220)
+        self.assertEqual(product["nutrition"]["energy_kcal_serving"], 55)
+        self.assertEqual(product["nutrition"]["serving_size"], 25)
+        self.assertEqual(product["nutrition"]["serving_unit"], "g")
+        self.assertEqual(product["nutrition"]["proteins_100g"], 15)
         self.assertTrue(product["image_data"].startswith("data:image/jpeg;base64,"))
+
+    def test_forced_product_lookup_bypasses_24_hour_cache(self):
+        payloads = [
+            {
+                "status": "success",
+                "product": {
+                    "code": "1234567890123",
+                    "product_name_no": "Testvare",
+                    "nutriments": {"energy-kcal_100g": 100},
+                },
+            },
+            {
+                "status": "success",
+                "product": {
+                    "code": "1234567890123",
+                    "product_name_no": "Testvare",
+                    "nutriments": {"energy-kcal_100g": 125},
+                },
+            },
+        ]
+
+        with mock.patch.object(
+            self.app,
+            "urlopen",
+            side_effect=[
+                FakeResponse(json.dumps(payload).encode(), "application/json")
+                for payload in payloads
+            ],
+        ) as mocked_urlopen:
+            first = self.app.lookup_product("1234567890123")
+            cached = self.app.lookup_product("1234567890123")
+            refreshed = self.app.lookup_product("1234567890123", force_refresh=True)
+
+        self.assertEqual(first["nutrition"]["energy_kcal_100g"], 100)
+        self.assertEqual(cached["nutrition"]["energy_kcal_100g"], 100)
+        self.assertEqual(refreshed["nutrition"]["energy_kcal_100g"], 125)
+        self.assertEqual(mocked_urlopen.call_count, 2)
 
     def test_product_lookup_has_manual_fallback(self):
         error = HTTPError(
@@ -862,6 +994,7 @@ class HjemmelagerTests(unittest.TestCase):
             self.assertEqual(item["location"], "Bod")
             self.assertEqual(item["opened_quantity"], 0)
             self.assertEqual(item["target_quantity"], 0)
+            self.assertEqual(item["nutrition"], {})
         finally:
             self.app.DB_PATH = original_path
 
