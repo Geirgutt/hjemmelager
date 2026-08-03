@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.2 - Kompakt liste
+
+- Gjør listevisningen tydelig mer kompakt enn kortvisningen.
+- Fjerner hurtigknapper og åpnehandlinger fra listen, slik at den brukes til rask oversikt.
+- Gjør hele vareraden trykkbar og viser navn, plassering, kategori og antall samlet.
+
 ## 1.1.1 - Plasseringstagger
 
 - Gjør det mulig å koble NFC-tagger til plasseringer uten å fjerne støtten for produkttagger.

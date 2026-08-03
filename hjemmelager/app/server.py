@@ -26,8 +26,8 @@ except ImportError:
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "1.1.1"
-APP_CODENAME = "Plasseringstagger"
+APP_VERSION = "1.1.2"
+APP_CODENAME = "Kompakt liste"
 TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
@@ -2863,16 +2863,24 @@ def page(title, body, base_path=""):
     }}
     .item-row {{
       display: grid;
-      grid-template-columns: 44px minmax(0, 1.4fr) minmax(120px, .8fr) minmax(90px, .6fr) auto;
-      gap: 10px;
+      grid-template-columns: 40px minmax(0, 1.4fr) minmax(150px, .9fr) auto 18px;
+      gap: 9px;
       align-items: center;
+      min-height: 54px;
+      color: var(--text);
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 8px;
-      padding: 8px;
+      padding: 6px 9px;
+      text-decoration: none;
+      transition: border-color .15s ease, background .15s ease;
+    }}
+    .item-row:hover {{
+      border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+      background: color-mix(in srgb, var(--accent) 4%, var(--panel));
     }}
     .item-row-thumb {{
-      width: 44px;
+      width: 40px;
       aspect-ratio: 1;
       border-radius: 7px;
       border: 1px solid var(--line);
@@ -2883,12 +2891,10 @@ def page(title, body, base_path=""):
     .item-row-title {{
       min-width: 0;
       font-weight: 750;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }}
-    .item-row-title a {{
-      color: var(--text);
-      text-decoration: none;
-    }}
-    .item-row-title a:hover {{ text-decoration: underline; }}
     .item-row-meta {{
       min-width: 0;
       overflow: hidden;
@@ -2898,14 +2904,12 @@ def page(title, body, base_path=""):
     .item-row-qty {{
       font-weight: 800;
       white-space: nowrap;
+      text-align: right;
     }}
-    .item-row-actions {{
-      display: flex;
-      gap: 6px;
-      justify-content: flex-end;
-    }}
-    .item-row-actions .btn {{
-      padding: 6px 9px;
+    .item-row-arrow {{
+      color: var(--muted);
+      font-size: 1.3rem;
+      line-height: 1;
     }}
     .location-list {{
       display: grid;
@@ -3764,14 +3768,20 @@ def page(title, body, base_path=""):
         font-size: .86rem;
       }}
       .item-row {{
-        grid-template-columns: 44px minmax(0, 1fr) auto;
+        grid-template-columns: 38px minmax(0, 1fr) auto 14px;
+        grid-template-rows: auto auto;
+        column-gap: 8px;
+        row-gap: 1px;
+        padding: 6px 8px;
       }}
-      .item-row-meta, .item-row-location {{
-        grid-column: 2 / -1;
+      .item-row-thumb {{
+        grid-row: 1 / 3;
+        width: 38px;
       }}
-      .item-row-actions {{
-        grid-column: 2 / -1;
-        justify-content: flex-start;
+      .item-row-title {{ grid-column: 2; grid-row: 1; }}
+      .item-row-meta {{ grid-column: 2 / 4; grid-row: 2; }}
+      .item-row-qty {{ grid-column: 3; grid-row: 1; }}
+      .item-row-arrow {{ grid-column: 4; grid-row: 1 / 3; }}
       }}
       .mobile-nav {{
         position: fixed;
@@ -4099,7 +4109,7 @@ def item_card(item):
 
 def item_row(item):
     badges = item_badges(item)
-    thumb = f'<a href="item/{item["id"]}"><img class="item-row-thumb" src="{esc(item["image_url"])}" alt=""></a>' if item["image_url"] else '<div class="item-row-thumb" aria-hidden="true"></div>'
+    thumb = f'<img class="item-row-thumb" src="{esc(item["image_url"])}" alt="">' if item["image_url"] else '<div class="item-row-thumb" aria-hidden="true"></div>'
     category = item["category"] or ("Forbruksvare" if item["kind"] == "consumable" else "Gjenstand")
     location = item["location"] or "Uten plassering"
     opened = (
@@ -4107,28 +4117,18 @@ def item_row(item):
         if item["kind"] == "consumable" and float(item["opened_quantity"] or 0)
         else ""
     )
-    open_action = (
-        f'<form method="post" action="item/{item["id"]}/open"><button class="btn" title="Flytt en fra lager til åpnet">Åpne</button></form>'
-        if item["kind"] == "consumable"
-        else ""
-    )
     stock_suffix = f"{esc(item['unit'])} på lager" if item["kind"] == "consumable" else esc(item["unit"])
     return f"""
-    <article class="item-row" data-item-id="{item['id']}" data-item-name="{esc(item['name'])}">
+    <a class="item-row" href="item/{item['id']}">
       {thumb}
       <div class="item-row-title">
-        <a href="item/{item['id']}">{esc(item['name'])}</a>
+        {esc(item['name'])}
         {badges}
       </div>
-      <div class="item-row-meta muted">{esc(location)}</div>
-      <div class="item-row-location muted">{esc(category)}</div>
-      <div class="item-row-qty" data-quantity-display data-quantity-raw="{float(item['quantity'])}"><span data-quantity-value>{fmt_num(item['quantity'])}</span> <span class="muted">{stock_suffix}</span>{f'<br><span class="muted">{esc(opened)}</span>' if opened else ''}</div>
-      <div class="item-row-actions">
-        <form class="quick-adjust" method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn" title="Reduser med én">−</button></form>
-        <form class="quick-adjust" method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="1"><button class="btn primary" title="Øk med én">+</button></form>
-        {open_action}
-      </div>
-    </article>
+      <div class="item-row-meta muted">{esc(location)} · {esc(category)}</div>
+      <div class="item-row-qty">{fmt_num(item['quantity'])} <span class="muted">{stock_suffix}</span>{f'<br><span class="muted">{esc(opened)}</span>' if opened else ''}</div>
+      <span class="item-row-arrow" aria-hidden="true">›</span>
+    </a>
     """
 
 

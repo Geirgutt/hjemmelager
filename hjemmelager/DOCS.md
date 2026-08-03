@@ -37,6 +37,8 @@ Home Assistant krever at et add-on-repository har `repository.yaml` i roten, og 
 
 Lagerforsiden viser antall varer, hva som må kjøpes, varer med nær best før og siste endring. **Historikk** under **Mer** viser hva som har skjedd og åpner varen slik at feil kan rettes.
 
+**Kort** er arbeidsvisningen med hurtigknapper for antall. **Liste** er en tettere oversikt uten `+` og `−`; trykk på en rad for å åpne varen og gjøre endringer.
+
 ## Antall og holdbarhetspartier
 
 På varesiden kan beholdningen endres med **Fjern 1**, **Legg til 1**, **Legg til 5**, **Legg til 10** eller et eget tall. Eget tall kan også være negativt, for eksempel `-3`.

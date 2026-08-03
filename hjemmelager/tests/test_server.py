@@ -140,7 +140,9 @@ class HjemmelagerTests(unittest.TestCase):
         full_page = self.app.page("Varer", card)
 
         self.assertEqual(card.count('class="quick-adjust"'), 2)
-        self.assertEqual(row.count('class="quick-adjust"'), 2)
+        self.assertNotIn('class="quick-adjust"', row)
+        self.assertIn(f'<a class="item-row" href="item/{item["id"]}">', row)
+        self.assertNotIn("Åpne</button>", row)
         self.assertIn("data-quantity-display", card)
         self.assertIn("handleQuickAdjustment", full_page)
         self.assertIn("quantity-increased", full_page)
