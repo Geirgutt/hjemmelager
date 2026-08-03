@@ -27,8 +27,8 @@ except ImportError:
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "1.2.0"
-APP_CODENAME = "Næring på lager"
+APP_VERSION = "1.3.0"
+APP_CODENAME = "Varsler i hus"
 TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
@@ -110,6 +110,15 @@ HOME_ASSISTANT_NFC_STATE = {
     "message": "Kobler til Home Assistant …",
     "updated_at": 0,
 }
+HOME_ASSISTANT_ALERT_ENTITY_ID = "sensor.hjemmelager_varsler"
+HOME_ASSISTANT_ALERT_LOCK = threading.Lock()
+HOME_ASSISTANT_ALERT_STATE = {
+    "status": "starting",
+    "message": "Oppretter varselsensor i Home Assistant …",
+    "updated_at": 0,
+    "entity_id": HOME_ASSISTANT_ALERT_ENTITY_ID,
+}
+HOME_ASSISTANT_ALERT_EVENT = threading.Event()
 ADDON_SLUG_CACHE = None
 
 
@@ -127,6 +136,22 @@ def set_home_assistant_nfc_state(status, message):
 def get_home_assistant_nfc_state():
     with HOME_ASSISTANT_NFC_LOCK:
         return dict(HOME_ASSISTANT_NFC_STATE)
+
+
+def set_home_assistant_alert_state(status, message):
+    with HOME_ASSISTANT_ALERT_LOCK:
+        HOME_ASSISTANT_ALERT_STATE.update(
+            {"status": status, "message": message, "updated_at": now()}
+        )
+
+
+def get_home_assistant_alert_state():
+    with HOME_ASSISTANT_ALERT_LOCK:
+        return dict(HOME_ASSISTANT_ALERT_STATE)
+
+
+def request_home_assistant_alert_publish():
+    HOME_ASSISTANT_ALERT_EVENT.set()
 
 
 def get_addon_slug():
@@ -929,6 +954,7 @@ def restore_backup_payload(payload):
                 values,
             )
 
+    request_home_assistant_alert_publish()
     return {
         "items": len(data["items"]),
         "locations": len(data["locations"]),
@@ -1124,6 +1150,76 @@ def create_alerts_payload(days=14):
     }
 
 
+def publish_home_assistant_alerts():
+    token = os.environ.get("SUPERVISOR_TOKEN", "").strip()
+    if not token:
+        set_home_assistant_alert_state(
+            "preview",
+            "Varselsensoren opprettes automatisk når Hjemmelager kjører i Home Assistant.",
+        )
+        return False
+
+    alerts = create_alerts_payload()
+    summary = alerts["summary"]
+    state_payload = {
+        "state": str(summary["total"]),
+        "attributes": {
+            "friendly_name": "Hjemmelager varsler",
+            "icon": "mdi:archive-alert",
+            "unit_of_measurement": "varer",
+            "message": alerts["message"],
+            "low_stock": summary["low_stock"],
+            "best_before": summary["best_before"],
+            "expired": summary["expired"],
+            "days_ahead": alerts["days_ahead"],
+        },
+    }
+    request = Request(
+        f"http://supervisor/core/api/states/{HOME_ASSISTANT_ALERT_ENTITY_ID}",
+        data=json.dumps(state_payload, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=15):
+            pass
+    except (HTTPError, URLError, OSError) as exc:
+        set_home_assistant_alert_state(
+            "retrying",
+            "Kunne ikke oppdatere varselsensoren. Prøver igjen automatisk …",
+        )
+        print(f"Home Assistant-varselsensor kunne ikke oppdateres: {exc}", flush=True)
+        return False
+
+    set_home_assistant_alert_state(
+        "connected",
+        f"{HOME_ASSISTANT_ALERT_ENTITY_ID} er oppdatert i Home Assistant.",
+    )
+    return True
+
+
+def home_assistant_alert_publisher():
+    while True:
+        HOME_ASSISTANT_ALERT_EVENT.clear()
+        publish_home_assistant_alerts()
+        if not os.environ.get("SUPERVISOR_TOKEN", "").strip():
+            return
+        HOME_ASSISTANT_ALERT_EVENT.wait(60)
+
+
+def start_home_assistant_alert_publisher():
+    publisher = threading.Thread(
+        target=home_assistant_alert_publisher,
+        name="home-assistant-alerts",
+        daemon=True,
+    )
+    publisher.start()
+    return publisher
+
+
 def get_item(item_id):
     with db() as conn:
         row = conn.execute("select * from items where id = ?", (item_id,)).fetchone()
@@ -1317,6 +1413,7 @@ def create_item(data):
         )
         item_id = cur.lastrowid
         save_event(conn, item_id, "created", None, quantity)
+    request_home_assistant_alert_publish()
     return get_item(item_id)
 
 
@@ -1437,6 +1534,7 @@ def update_item(item_id, data):
             ),
         )
         save_event(conn, item_id, "updated", None, quantity)
+    request_home_assistant_alert_publish()
     return get_item(item_id)
 
 
@@ -1481,6 +1579,7 @@ def adjust_item(item_id, delta, note=""):
             ),
         )
         save_event(conn, item_id, "adjusted", actual_delta, quantity, event_note)
+    request_home_assistant_alert_publish()
     return get_item(item_id)
 
 
@@ -1549,6 +1648,7 @@ def add_expiry_batch(
             if note == "web"
             else f"{note}:{best_before}",
         )
+    request_home_assistant_alert_publish()
     return get_item(item_id)
 
 
@@ -1584,6 +1684,7 @@ def clear_expiry_batch_date(item_id, best_before, note="web"):
             row["quantity"],
             best_before if note == "web" else f"{note}:{best_before}",
         )
+    request_home_assistant_alert_publish()
     return get_item(item_id)
 
 
@@ -1645,6 +1746,7 @@ def undo_last_adjustment(item_id, max_age_seconds=600):
             previous_quantity,
             f"undo:{event['id']}",
         )
+    request_home_assistant_alert_publish()
     return {"status": "undone", "item": get_item(item_id)}
 
 
@@ -1717,6 +1819,7 @@ def set_shopping_enabled(item_id, enabled):
             None,
             row["quantity"],
         )
+    request_home_assistant_alert_publish()
     return get_item(item_id)
 
 
@@ -1754,7 +1857,9 @@ def delete_item(item_id):
             )
             """
         )
-        return int(cursor.lastrowid)
+        deletion_id = int(cursor.lastrowid)
+    request_home_assistant_alert_publish()
+    return deletion_id
 
 
 def restore_deleted_item(deletion_id):
@@ -1830,6 +1935,7 @@ def restore_deleted_item(deletion_id):
             item["quantity"],
         )
         conn.execute("delete from deleted_items where id = ?", (deletion_id,))
+    request_home_assistant_alert_publish()
     return {"status": "restored", "item": get_item(item["id"])}
 
 
@@ -1876,6 +1982,7 @@ def open_package(item_id, note=""):
             ),
         )
         save_event(conn, item_id, "package_opened", actual_delta, quantity, note)
+    request_home_assistant_alert_publish()
     return get_item(item_id)
 
 
@@ -5918,10 +6025,24 @@ def organize_page():
         )
     else:
         alert_status = "Ingen varer krever oppmerksomhet nå"
-    nfc = get_home_assistant_nfc_state()
-    nfc_ready = nfc["status"] == "connected"
-    nfc_label = "Tilkoblet" if nfc_ready else "Kobler til"
-    nfc_dot = "" if nfc_ready else " waiting"
+    alert_bridge = get_home_assistant_alert_state()
+    alert_bridge_labels = {
+        "connected": "Sensor klar i Home Assistant",
+        "retrying": "Kunne ikke oppdatere sensoren ennå",
+        "preview": "Sensoren opprettes i Home Assistant",
+        "starting": "Oppretter varselsensor …",
+    }
+    alert_bridge_label = alert_bridge_labels.get(
+        alert_bridge["status"], "Varselsensoren gjør seg klar"
+    )
+    blueprint_url = (
+        "https://raw.githubusercontent.com/Geirgutt/tr-kker/main/"
+        "hjemmelager/blueprints/daily_inventory_alert.yaml"
+    )
+    blueprint_import_url = (
+        "https://my.home-assistant.io/redirect/blueprint_import/?"
+        + urlencode({"blueprint_url": blueprint_url})
+    )
     with db() as conn:
         location_rows = conn.execute(
             """
@@ -5967,28 +6088,6 @@ def organize_page():
     category_list = "".join(f"<li>{esc(value)}</li>" for value in categories) or "<li>Ingen kategorier ennå</li>"
     return f"""
     <h1>Steder og kategorier</h1>
-    <section class="card">
-      <h2>Systemstatus</h2>
-      <p class="muted">Det viktigste samlet på ett sted.</p>
-      <div class="status-grid">
-        <div class="status-item">
-          <strong><span class="status-dot{nfc_dot}"></span>NFC: {nfc_label}</strong>
-          <small class="muted">{esc(nfc["message"])}</small>
-        </div>
-        <div class="status-item">
-          <strong><span class="status-dot"></span>Produktoppslag: Klar</strong>
-          <small class="muted">Brukes automatisk etter strekkodeskanning.</small>
-        </div>
-        <div class="status-item">
-          <strong><span class="status-dot"></span>Backup: Klar</strong>
-          <small class="muted">Komplett kopi kan lastes ned når som helst.</small>
-        </div>
-      </div>
-      <div class="actions" style="margin-top: 10px;">
-        <a class="btn" href="activity">Vis historikk</a>
-        <a class="btn" href="export/items.csv">Eksporter regneark</a>
-      </div>
-    </section>
     <section class="grid">
       <div class="card">
         <h2>Plasseringer</h2>
@@ -6013,15 +6112,25 @@ def organize_page():
         <ul>{category_list}</ul>
       </div>
     </section>
-    <section class="card" style="margin-top: 10px;">
-      <h2>Home Assistant-varsler</h2>
-      <p class="muted">{esc(alert_status)}</p>
-      <p>Hjemmelager kan nå levere én samlet status for handleliste og best før til en Home Assistant-automatisering.</p>
-      <div class="actions">
-        <a class="btn primary" href="api/alerts">Test varseldata</a>
+    <details class="card form-section" style="margin-top: 10px;">
+      <summary>
+        <span class="form-section-summary">
+          Home Assistant-varsler
+          <small>{esc(alert_bridge_label)} · {esc(alert_status)}</small>
+        </span>
+      </summary>
+      <div class="form-section-content">
+        <p><strong>{esc(alert_bridge_label)}</strong></p>
+        <p class="muted">{esc(alert_bridge["message"])}</p>
+        <p>Importer varseloppsettet, velg telefon og tidspunkt, og lagre. Da vises det som en vanlig automasjon i Home Assistant og Companion-appen.</p>
+        <div class="actions">
+          <a class="btn primary" href="{esc(blueprint_import_url)}" target="_blank" rel="noreferrer">Importer varseloppsett</a>
+          <a class="btn" href="https://my.home-assistant.io/redirect/automations/" target="_blank" rel="noreferrer">Åpne automasjoner</a>
+          <a class="btn" href="api/alerts">Test varseldata</a>
+        </div>
+        <p class="field-help">Sensor: <code>{HOME_ASSISTANT_ALERT_ENTITY_ID}</code>. Den oppdateres automatisk av add-onen.</p>
       </div>
-      <p class="field-help">Ferdig sensor og automatisering følger med under <strong>examples</strong>. Velg selv hvilken mobil som skal motta varselet.</p>
-    </section>
+    </details>
     <section class="card" style="margin-top: 10px;">
       <h2>Data og sikkerhetskopi</h2>
       <p class="muted">Last ned en komplett kopi av varer, bilder, steder, kategorier og historikk.</p>
@@ -7077,5 +7186,6 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     init_db()
     start_home_assistant_event_listener()
+    start_home_assistant_alert_publisher()
     print(f"{APP_NAME} v{APP_VERSION} ({APP_CODENAME}) starter på port {PORT}. Database: {DB_PATH}", flush=True)
     ThreadingHTTPServer(("", PORT), Handler).serve_forever()

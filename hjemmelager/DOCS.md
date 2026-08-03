@@ -186,15 +186,17 @@ curl -X POST http://homeassistant.local:8099/api/tag/04-AB-CD/adjust \
 
 ## Home Assistant-varsler
 
-Oppsettet består av en lokal REST-sensor og en daglig automatisering. Ingen passord, skytjeneste eller ekstern konto er nødvendig.
+Hjemmelager oppretter og oppdaterer `sensor.hjemmelager_varsler` automatisk gjennom Home Assistant. Sensoren inneholder antall varer som trenger oppmerksomhet og en ferdig varseltekst. Port `8099`, endringer i `configuration.yaml` og omstart av Home Assistant er ikke nødvendig.
 
-1. Aktiver port `8099` under **Hjemmelager → Network**.
-2. Legg inn sensorblokken fra `hjemmelager/examples/inventory_alerts_configuration.yaml` i `configuration.yaml`.
-3. Kontroller konfigurasjonen og start Home Assistant på nytt.
-4. Opprett en automatisering med innholdet fra `hjemmelager/examples/inventory_alert_automation.yaml`.
-5. Bytt `notify.notify` til telefonens handling, for eksempel `notify.mobile_app_navnet_pa_telefonen`, hvis varselet skal til en bestemt mobil.
+1. Oppdater og start Hjemmelager-add-onen.
+2. Åpne **Mer → Home Assistant-varsler** i Hjemmelager og kontroller at sensoren er klar.
+3. Trykk **Importer varseloppsett** og bekreft importen i Home Assistant.
+4. Velg `sensor.hjemmelager_varsler`, telefonen som skal varsles og ønsket tidspunkt.
+5. Lagre automasjonen.
 
-Sensoren spør Hjemmelager lokalt én gang i timen. Automatiseringen oppdaterer den på nytt klokken 08:00 og sender bare varsel når minst én vare må kjøpes eller har passert/nærmer seg best før. Tidspunktet kan endres direkte i automatiseringen.
+Etter lagring finnes oppsettet under **Innstillinger → Automatiseringer og scener → Automatiseringer**, også når siden åpnes i Companion-appen. Automatiseringen sender bare varsel når sensoren er større enn null. Telefonen må være registrert i Home Assistant via Companion-appen for å kunne velges.
+
+Sensoren oppdateres etter relevante lagerendringer og kontrolleres dessuten automatisk mens add-onen kjører. De gamle YAML-eksemplene i `hjemmelager/examples` er kun reserveoppsett for eldre installasjoner.
 
 ## Oppdatering
 
@@ -279,7 +281,7 @@ Hver godkjente versjon skal ha både versjonsnummer og kodenavn.
 Gjeldende versjon er:
 
 ```text
-1.2.0 - Næring på lager
+1.3.0 - Varsler i hus
 ```
 
 Kontroller installert versjon på én av disse måtene:

@@ -1,5 +1,5 @@
-# Legg denne blokken i configuration.yaml.
-# Port 8099 må være aktivert under Hjemmelager → Network.
+# Reserveoppsett for eldre installasjoner. Fra versjon 1.3.0 oppretter
+# Hjemmelager sensoren automatisk, uten denne blokken eller port 8099.
 sensor:
   - platform: rest
     name: Hjemmelager varsler

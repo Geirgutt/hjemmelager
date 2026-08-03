@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.0 - Varsler i hus
+
+- Oppretter og oppdaterer `sensor.hjemmelager_varsler` automatisk gjennom Home Assistant, uten port 8099 eller manuell REST-sensor.
+- Legger ved et importerbart varseloppsett som lar deg velge telefon og tidspunkt, og som lagres som en vanlig Home Assistant-automasjon.
+- Fjerner den plasskrevende systemstatusen og samler faktisk sensorstatus og varseloppsett i en kompakt, sammenleggbar seksjon.
+
 ## 1.2.0 - Næring på lager
 
 - Henter energi, porsjonsstørrelse, fett, karbohydrater, sukkerarter, protein, fiber og salt fra Open Food Facts når dataene finnes.

@@ -57,6 +57,11 @@ class HjemmelagerTests(unittest.TestCase):
             conn.execute("delete from locations")
             conn.execute("delete from categories")
         self.app.PRODUCT_LOOKUP_CACHE.clear()
+        self.app.HOME_ASSISTANT_ALERT_EVENT.clear()
+        self.app.set_home_assistant_alert_state(
+            "starting",
+            "Oppretter varselsensor i Home Assistant …",
+        )
 
     def create_item(self, name, **values):
         data = {
@@ -750,6 +755,84 @@ class HjemmelagerTests(unittest.TestCase):
 
         self.assertEqual(alerts["low_stock"][0]["buy_quantity"], 1)
         self.assertIn("Havregryn (1 stk)", alerts["message"])
+
+    def test_alert_sensor_is_published_through_home_assistant_api(self):
+        self.create_item("Melk", quantity="1", min_quantity="2")
+        self.app.HOME_ASSISTANT_ALERT_EVENT.clear()
+
+        with mock.patch.dict(os.environ, {"SUPERVISOR_TOKEN": "test-token"}):
+            with mock.patch.object(
+                self.app,
+                "urlopen",
+                return_value=FakeResponse(b"{}", "application/json"),
+            ) as mocked_urlopen:
+                published = self.app.publish_home_assistant_alerts()
+
+        request = mocked_urlopen.call_args.args[0]
+        payload = json.loads(request.data.decode("utf-8"))
+        self.assertTrue(published)
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(
+            request.full_url,
+            "http://supervisor/core/api/states/sensor.hjemmelager_varsler",
+        )
+        self.assertEqual(request.get_header("Authorization"), "Bearer test-token")
+        self.assertEqual(payload["state"], "1")
+        self.assertEqual(payload["attributes"]["low_stock"], 1)
+        self.assertIn("Må kjøpes: Melk", payload["attributes"]["message"])
+        self.assertEqual(
+            self.app.get_home_assistant_alert_state()["status"], "connected"
+        )
+
+    def test_alert_sensor_waits_for_home_assistant_in_local_preview(self):
+        with mock.patch.dict(os.environ, {"SUPERVISOR_TOKEN": ""}):
+            with mock.patch.object(self.app, "urlopen") as mocked_urlopen:
+                published = self.app.publish_home_assistant_alerts()
+
+        self.assertFalse(published)
+        mocked_urlopen.assert_not_called()
+        state = self.app.get_home_assistant_alert_state()
+        self.assertEqual(state["status"], "preview")
+        self.assertIn("Home Assistant", state["message"])
+
+    def test_inventory_change_requests_alert_sensor_refresh(self):
+        self.app.HOME_ASSISTANT_ALERT_EVENT.clear()
+
+        self.create_item("Kaffe", quantity="1", min_quantity="2")
+
+        self.assertTrue(self.app.HOME_ASSISTANT_ALERT_EVENT.is_set())
+
+    def test_reading_alerts_does_not_request_another_refresh(self):
+        self.app.HOME_ASSISTANT_ALERT_EVENT.clear()
+
+        self.app.create_alerts_payload()
+
+        self.assertFalse(self.app.HOME_ASSISTANT_ALERT_EVENT.is_set())
+
+    def test_organize_page_has_compact_real_alert_setup(self):
+        self.app.set_home_assistant_alert_state(
+            "connected",
+            "sensor.hjemmelager_varsler er oppdatert i Home Assistant.",
+        )
+
+        content = self.app.organize_page()
+
+        self.assertNotIn("Systemstatus", content)
+        self.assertIn('<details class="card form-section"', content)
+        self.assertIn("Sensor klar i Home Assistant", content)
+        self.assertIn("Importer varseloppsett", content)
+        self.assertIn("blueprint_import", content)
+        self.assertIn("sensor.hjemmelager_varsler", content)
+
+    def test_alert_blueprint_uses_mobile_app_and_published_sensor(self):
+        blueprint_path = Path(__file__).parents[1] / "blueprints" / "daily_inventory_alert.yaml"
+        content = blueprint_path.read_text(encoding="utf-8")
+
+        self.assertIn("domain: automation", content)
+        self.assertIn("default: sensor.hjemmelager_varsler", content)
+        self.assertIn("integration: mobile_app", content)
+        self.assertIn("condition: numeric_state", content)
+        self.assertIn("type: notify", content)
 
     def test_product_lookup_fills_name_brand_and_local_image(self):
         payload = json.dumps(

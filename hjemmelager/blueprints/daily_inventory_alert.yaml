@@ -1,0 +1,52 @@
+blueprint:
+  name: Hjemmelager - daglig lagerpåminnelse
+  description: >-
+    Sender et mobilvarsel når Hjemmelager har varer med lav beholdning
+    eller nær best før-dato.
+  domain: automation
+  source_url: https://github.com/Geirgutt/tr-kker/blob/main/hjemmelager/blueprints/daily_inventory_alert.yaml
+  input:
+    alert_sensor:
+      name: Hjemmelager-sensor
+      description: Sensoren opprettes automatisk av Hjemmelager-add-onen.
+      default: sensor.hjemmelager_varsler
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+    notify_device:
+      name: Telefon
+      description: Telefonen som skal motta varselet.
+      selector:
+        device:
+          filter:
+            - integration: mobile_app
+    reminder_time:
+      name: Tidspunkt
+      description: Når lageret skal kontrolleres hver dag.
+      default: "08:00:00"
+      selector:
+        time:
+
+trigger:
+  - platform: time
+    at: !input reminder_time
+
+variables:
+  alert_sensor: !input alert_sensor
+
+condition:
+  - condition: numeric_state
+    entity_id: !input alert_sensor
+    above: 0
+
+action:
+  - device_id: !input notify_device
+    domain: mobile_app
+    type: notify
+    title: Hjemmelager
+    message: >-
+      {{ state_attr(alert_sensor, 'message')
+         or 'Hjemmelager har varer som trenger oppmerksomhet.' }}
+
+mode: single

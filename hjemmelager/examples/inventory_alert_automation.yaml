@@ -1,3 +1,5 @@
+# Reserveoppsett for eldre installasjoner. Bruk normalt blueprint-importen
+# under Mer → Home Assistant-varsler i Hjemmelager.
 alias: Hjemmelager - daglig lagerpåminnelse
 description: Varsler om varer som må kjøpes eller nærmer seg best før.
 mode: single
