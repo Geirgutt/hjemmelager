@@ -27,8 +27,8 @@ except ImportError:
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "1.3.1"
-APP_CODENAME = "Hjelp underveis"
+APP_VERSION = "1.4.0"
+APP_CODENAME = "Ryddig vareflyt"
 TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
@@ -45,6 +45,9 @@ OPEN_FOOD_FACTS_USER_AGENT = (
 )
 PRODUCT_LOOKUP_CACHE = {}
 PRODUCT_LOOKUP_CACHE_SECONDS = 24 * 60 * 60
+LOW_STOCK_WHERE = (
+    "kind = 'consumable' and shopping_enabled = 1 and quantity <= min_quantity"
+)
 NUTRITION_NUMBER_FIELDS = (
     "energy_kcal_100g",
     "energy_kcal_serving",
@@ -584,7 +587,6 @@ def row_to_item(row):
     item["is_low"] = (
         item["kind"] == "consumable"
         and item["shopping_enabled"] == 1
-        and item["min_quantity"] > 0
         and item["quantity"] <= item["min_quantity"]
     )
     item["days_until_best_before"] = None
@@ -614,7 +616,6 @@ def list_items(where="", params=(), sort="default"):
                 case
                     when kind = 'consumable'
                         and shopping_enabled = 1
-                        and min_quantity > 0
                         and quantity <= min_quantity
                     then 1
                     else 0
@@ -1010,7 +1011,7 @@ def build_item_filters(
         clauses.append("location = ?")
         params.append(location)
     if low_only:
-        clauses.append("kind = 'consumable' and shopping_enabled = 1 and min_quantity > 0 and quantity <= min_quantity")
+        clauses.append(LOW_STOCK_WHERE)
     if expiry_only:
         clauses.append("kind = 'consumable' and best_before != '' and best_before <= ?")
         params.append((date.today() + timedelta(days=14)).isoformat())
@@ -1059,10 +1060,7 @@ def create_alerts_payload(days=14):
         days = 14
     days = max(1, min(days, 90))
     threshold = (date.today() + timedelta(days=days)).isoformat()
-    low_items = list_items(
-        "kind = 'consumable' and shopping_enabled = 1 "
-        "and min_quantity > 0 and quantity <= min_quantity"
-    )
+    low_items = list_items(LOW_STOCK_WHERE)
     expiry_items = list_items(
         "kind = 'consumable' and best_before != '' and best_before <= ?",
         (threshold,),
@@ -2397,8 +2395,9 @@ def lookup_product(barcode, force_refresh=False):
             "image_front_small_url",
         )
     )
+    # The v3 response can omit nutriments that are present in the same product's v2 data.
     url = (
-        f"{OPEN_FOOD_FACTS_BASE_URL}/api/v3.6/product/{barcode}.json?"
+        f"{OPEN_FOOD_FACTS_BASE_URL}/api/v2/product/{barcode}.json?"
         + urlencode({"fields": fields})
     )
     request = Request(
@@ -2431,7 +2430,7 @@ def lookup_product(barcode, force_refresh=False):
         }
     else:
         product = payload.get("product") or {}
-        if payload.get("status") != "success" or not product:
+        if payload.get("status") not in (1, "1", "success") or not product:
             result = {
                 "status": "not_found",
                 "barcode": barcode,
@@ -3150,6 +3149,28 @@ def page(title, body, base_path=""):
     .item-card .actions {{
       position: relative;
       z-index: 1;
+      align-items: center;
+      justify-content: space-between;
+    }}
+    .card-stock-actions,
+    .card-package-actions {{
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }}
+    .card-stock-actions .btn {{
+      display: inline-grid;
+      place-items: center;
+      width: 38px;
+      min-height: 38px;
+      padding: 6px;
+      font-size: 1.15rem;
+      line-height: 1;
+    }}
+    .card-package-actions {{
+      margin-left: auto;
+      padding-left: 12px;
+      border-left: 1px solid var(--line);
     }}
     .item-card .qty {{
       margin: 5px 0 0;
@@ -3446,6 +3467,86 @@ def page(title, body, base_path=""):
     }}
     .qty {{ font-size: 2rem; font-weight: 800; margin: 8px 0; }}
     .actions {{ display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }}
+    .item-detail-layout {{
+      display: grid;
+      grid-template-columns: minmax(0, 1.25fr) minmax(320px, .75fr);
+      align-items: start;
+      gap: 12px;
+    }}
+    .item-detail-sidebar {{
+      display: grid;
+      gap: 10px;
+      min-width: 0;
+    }}
+    .item-detail-sidebar > * {{
+      margin: 0;
+    }}
+    .item-detail-sidebar .expiry-add-form {{
+      grid-template-columns: minmax(0, 1fr);
+    }}
+    .item-detail-sidebar .expiry-add-form .btn {{
+      grid-column: auto;
+    }}
+    .item-stock-summary {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin: 12px 0;
+    }}
+    .item-stock-summary.single {{
+      grid-template-columns: minmax(0, 1fr);
+    }}
+    .stock-summary-value {{
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: color-mix(in srgb, var(--panel) 88%, var(--bg));
+    }}
+    .stock-summary-value strong {{
+      overflow-wrap: anywhere;
+      font-size: 1.45rem;
+      line-height: 1.1;
+    }}
+    .stock-summary-value span {{
+      color: var(--muted);
+      font-size: .82rem;
+    }}
+    .daily-actions {{
+      margin-top: 16px;
+      padding-top: 14px;
+      border-top: 1px solid var(--line);
+    }}
+    .daily-actions h2 {{
+      margin-bottom: 8px;
+    }}
+    .daily-action-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }}
+    .daily-action-grid form,
+    .daily-action-grid .btn {{
+      width: 100%;
+    }}
+    .daily-action-grid .btn {{
+      min-height: 44px;
+    }}
+    .detail-action-list {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      padding-top: 12px;
+    }}
+    .detail-action-list > *,
+    .detail-action-list .btn {{
+      width: 100%;
+    }}
+    .detail-action-list .quantity-custom {{
+      grid-column: 1 / -1;
+    }}
     .quantity-custom {{
       display: flex;
       align-items: end;
@@ -3461,9 +3562,7 @@ def page(title, body, base_path=""):
       padding: 8px 9px;
     }}
     .expiry-panel {{
-      margin-top: 18px;
-      padding-top: 16px;
-      border-top: 1px solid var(--line);
+      padding-top: 12px;
     }}
     .expiry-panel h2 {{ margin: 0 0 4px; font-size: 1rem; }}
     .expiry-batch-list {{ display: grid; gap: 6px; margin-top: 10px; }}
@@ -4163,8 +4262,15 @@ def page(title, body, base_path=""):
         padding: 7px 9px;
         font-size: .86rem;
       }}
-      .item-card .actions .details-link {{
-        margin-left: auto;
+      .card-package-actions {{
+        gap: 5px;
+      }}
+      .card-package-actions .btn {{
+        white-space: nowrap;
+      }}
+      .item-detail-layout {{
+        grid-template-columns: minmax(0, 1fr);
+        gap: 8px;
       }}
       .item-detail-card .item-hero {{
         max-height: 230px;
@@ -4187,6 +4293,24 @@ def page(title, body, base_path=""):
         padding: 7px 10px;
         font-size: .86rem;
       }}
+      .item-stock-summary {{
+        margin: 9px 0;
+      }}
+      .stock-summary-value {{
+        padding: 10px;
+      }}
+      .stock-summary-value strong {{
+        font-size: 1.22rem;
+      }}
+      .daily-action-grid {{
+        gap: 6px;
+      }}
+      .detail-action-list {{
+        grid-template-columns: minmax(0, 1fr);
+      }}
+      .detail-action-list .quantity-custom {{
+        grid-column: auto;
+      }}
       .item-row {{
         grid-template-columns: 38px minmax(0, 1fr) auto 14px;
         grid-template-rows: auto auto;
@@ -4202,7 +4326,6 @@ def page(title, body, base_path=""):
       .item-row-meta {{ grid-column: 2 / 4; grid-row: 2; }}
       .item-row-qty {{ grid-column: 3; grid-row: 1; }}
       .item-row-arrow {{ grid-column: 4; grid-row: 1 / 3; }}
-      }}
       .mobile-nav {{
         position: fixed;
         inset: auto 0 0;
@@ -4477,27 +4600,36 @@ def expiry_batches_panel(item):
         )
     rows_html = "".join(rows) or '<p class="muted">Ingen beholdning har holdbarhetsdato ennå.</p>'
     return f"""
-      <section class="expiry-panel">
-        <h2>Holdbarhetspartier</h2>
-        <p class="muted">Når du fjerner varer, brukes partiet med tidligst dato først.</p>
-        <div class="expiry-batch-list">{rows_html}</div>
-        <form class="expiry-add-form" method="post" action="item/{item['id']}/expiry/add">
-          <label>Antall i nytt parti
-            <input name="quantity" type="number" min="0.01" step="0.01" inputmode="decimal" required placeholder="For eksempel 5">
-          </label>
-          <label>Best før
-            <input name="best_before" type="date" required>
-          </label>
-          <label>Antallet
-            <select name="source">
-              <option value="new">Legg til i totalen</option>
-              <option value="existing">Finnes allerede i totalen</option>
-            </select>
-          </label>
-          <button class="btn primary">Legg til parti</button>
-        </form>
-        <p class="field-help">Velg «finnes allerede» når du bare fordeler udatert beholdning på datoer.</p>
-      </section>
+      <details class="card form-section expiry-details">
+        <summary>
+          <span class="form-section-summary">
+            Holdbarhet og partier
+            <small>Best før-datoer og fordeling</small>
+          </span>
+        </summary>
+        <div class="form-section-content">
+          <section class="expiry-panel">
+            <p class="muted">Når du fjerner varer, brukes partiet med tidligst dato først.</p>
+            <div class="expiry-batch-list">{rows_html}</div>
+            <form class="expiry-add-form" method="post" action="item/{item['id']}/expiry/add">
+              <label>Antall i nytt parti
+                <input name="quantity" type="number" min="0.01" step="0.01" inputmode="decimal" required placeholder="For eksempel 5">
+              </label>
+              <label>Best før
+                <input name="best_before" type="date" required>
+              </label>
+              <label>Antallet
+                <select name="source">
+                  <option value="new">Legg til i totalen</option>
+                  <option value="existing">Finnes allerede i totalen</option>
+                </select>
+              </label>
+              <button class="btn primary">Legg til parti</button>
+            </form>
+            <p class="field-help">Velg «finnes allerede» når du bare fordeler udatert beholdning på datoer.</p>
+          </section>
+        </div>
+      </details>
     """
 
 
@@ -4514,10 +4646,24 @@ def item_card(item):
         else f'<span data-quantity-value>{fmt_num(item["quantity"])}</span> {esc(item["unit"])}'
     )
     opened = ""
-    open_action = ""
+    package_actions = ""
     if item["kind"] == "consumable":
         opened = f'<div class="opened-count muted">{fmt_num(item["opened_quantity"])} {esc(item["unit"])} åpne</div>'
-        open_action = f'<form method="post" action="item/{item["id"]}/open"><button class="btn" title="Flytt en fra lager til åpnet">Åpne</button></form>'
+        open_action = (
+            f'<form method="post" action="item/{item["id"]}/open"><button class="btn" title="Flytt én fra lager til åpnet">Åpne</button></form>'
+            if float(item["quantity"] or 0) > 0
+            else ""
+        )
+        use_action = (
+            f'<form method="post" action="item/{item["id"]}/adjust-opened"><input type="hidden" name="delta" value="-1"><button class="btn primary" title="Bruk opp én åpnet pakke">Bruk opp</button></form>'
+            if float(item["opened_quantity"] or 0) > 0
+            else ""
+        )
+        package_actions = (
+            f'<div class="card-package-actions">{open_action}{use_action}</div>'
+            if open_action or use_action
+            else ""
+        )
     thumb = f'<a href="item/{item["id"]}"><img class="item-thumb" src="{esc(item["image_url"])}" alt=""></a>' if item["image_url"] else '<div class="item-thumb" aria-hidden="true"></div>'
     return f"""
     <article class="card item-card" data-item-id="{item['id']}" data-item-name="{esc(item['name'])}">
@@ -4534,10 +4680,11 @@ def item_card(item):
         <div class="qty" data-quantity-display data-quantity-raw="{float(item['quantity'])}">{quantity_label}</div>
         {opened}
         <div class="actions">
-          <form class="quick-adjust" method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn" aria-label="Reduser {esc(item['name'])} med én">−</button></form>
-          <form class="quick-adjust" method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="1"><button class="btn primary" aria-label="Øk {esc(item['name'])} med én">+</button></form>
-          {open_action}
-          <a class="btn details-link" href="item/{item['id']}">Se vare</a>
+          <div class="card-stock-actions">
+            <form class="quick-adjust" method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn" aria-label="Reduser {esc(item['name'])} med én" {"disabled" if float(item['quantity'] or 0) <= 0 else ""}>−</button></form>
+            <form class="quick-adjust" method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="1"><button class="btn" aria-label="Øk {esc(item['name'])} med én">+</button></form>
+          </div>
+          {package_actions}
         </div>
       </div>
     </article>
@@ -4993,7 +5140,8 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
               <input name="opened_quantity" type="number" step="0.01" value="{fmt_num(item['opened_quantity'])}">
             </label>
             <label>Varsle ved antall
-              <input name="min_quantity" type="number" step="0.01" value="{fmt_num(item['min_quantity'])}">
+              <input name="min_quantity" type="number" min="0" step="0.01" value="{fmt_num(item['min_quantity'])}">
+              <span class="field-help">0 betyr når ingen uåpnede pakker er igjen.</span>
             </label>
             <label>Fyll opp til
               <input name="target_quantity" type="number" step="0.01"
@@ -5007,7 +5155,7 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
             {expiry_field}
             <label class="full">
               <input type="hidden" name="shopping_enabled" value="0">
-              <span><input type="checkbox" name="shopping_enabled" value="1" {checked}> Legg på handlelisten når beholdningen blir lav</span>
+              <span><input type="checkbox" name="shopping_enabled" value="1" {checked}> Varsle og legg på handlelisten når beholdningen blir lav</span>
             </label>
           </div>
         </div>
@@ -5960,9 +6108,7 @@ def scan_page():
 
 
 def shopping_list_page():
-    items = list_items(
-        "kind = 'consumable' and shopping_enabled = 1 and min_quantity > 0 and quantity <= min_quantity"
-    )
+    items = list_items(LOW_STOCK_WHERE)
     remaining = [item for item in items if not item["shopping_checked"]]
     completed = [item for item in items if item["shopping_checked"]]
 
@@ -6159,6 +6305,7 @@ def help_page():
                 (
                     "Bruk pluss og minus på varekortet for raske lagerendringer.",
                     "Åpne pakke flytter én enhet fra uåpnet til åpnet beholdning.",
+                    "Bruk opp på varekortet fullfører én åpnet pakke.",
                     "Bruk Angre rett etter en feil lagerjustering.",
                     "Historikken viser hva som ble endret og når.",
                 ),
@@ -6196,7 +6343,8 @@ def help_page():
                 "Handleliste",
                 "Lav beholdning og foreslått kjøpsmengde",
                 (
-                    "Varsle ved antall bestemmer når varen kommer på handlelisten.",
+                    "Varsle ved antall bestemmer når varen kommer på handlelisten; 0 betyr når ingen uåpnede pakker er igjen.",
+                    "Checkboxen for handlelisten slår varsling for varen helt av eller på.",
                     "Fyll opp til bestemmer hvor mye Hjemmelager foreslår at du kjøper.",
                     "Kryss av varer mens du handler, eller del listen fra telefonen.",
                     "Deaktiver handleliste på varer du ikke ønsker varsling for.",
@@ -6884,15 +7032,28 @@ class Handler(BaseHTTPRequestHandler):
                 price_text = fmt_price(item["price"]) or "Ikke satt"
                 best_before_text = item["best_before"] or "Ikke satt"
                 is_consumable = item["kind"] == "consumable"
-                quantity_text = (
-                    f"{fmt_num(item['quantity'])} {esc(item['unit'])} på lager"
+                stock_summary = (
+                    f"""
+                      <div class="item-stock-summary">
+                        <div class="stock-summary-value">
+                          <strong>{fmt_num(item['quantity'])} {esc(item['unit'])}</strong>
+                          <span>uåpnet på lager</span>
+                        </div>
+                        <div class="stock-summary-value">
+                          <strong>{fmt_num(item['opened_quantity'])} {esc(item['unit'])}</strong>
+                          <span>åpnet</span>
+                        </div>
+                      </div>
+                    """
                     if is_consumable
-                    else f"{fmt_num(item['quantity'])} {esc(item['unit'])}"
-                )
-                opened_text = (
-                    f'<p class="muted">{fmt_num(item["opened_quantity"])} {esc(item["unit"])} åpne</p>'
-                    if is_consumable
-                    else ""
+                    else f"""
+                      <div class="item-stock-summary single">
+                        <div class="stock-summary-value">
+                          <strong>{fmt_num(item['quantity'])} {esc(item['unit'])}</strong>
+                          <span>registrert</span>
+                        </div>
+                      </div>
+                    """
                 )
                 stock_details = (
                     f"""
@@ -6917,8 +7078,8 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 consumable_actions = (
                     f"""
-                      <form method="post" action="item/{item['id']}/open"><button class="btn">Åpne 1 pakke</button></form>
-                      <form method="post" action="item/{item['id']}/adjust-opened"><input type="hidden" name="delta" value="-1"><button class="btn">Bruk 1 åpen</button></form>
+                      <form method="post" action="item/{item['id']}/open"><button class="btn" {"disabled" if float(item['quantity'] or 0) <= 0 else ""}>Åpne 1 pakke</button></form>
+                      <form method="post" action="item/{item['id']}/adjust-opened"><input type="hidden" name="delta" value="-1"><button class="btn primary" {"disabled" if float(item['opened_quantity'] or 0) <= 0 else ""}>Bruk opp 1 åpnet</button></form>
                     """
                     if is_consumable
                     else ""
@@ -6933,9 +7094,9 @@ class Handler(BaseHTTPRequestHandler):
                             "0" if item["shopping_enabled"] else "1"
                         }">
                         <button class="btn">{
-                            "Ikke på handleliste"
+                            "Slå av varsling og handleliste"
                             if item["shopping_enabled"]
-                            else "Bruk handleliste"
+                            else "Bruk varsling og handleliste"
                         }</button>
                       </form>
                     """
@@ -6969,51 +7130,87 @@ class Handler(BaseHTTPRequestHandler):
                     if item["tag_id"]
                     else ""
                 )
+                adjustment_panel = f"""
+                  <details class="card form-section adjustment-details">
+                    <summary>
+                      <span class="form-section-summary">
+                        Juster antall
+                        <small>Større eller nøyaktig endring</small>
+                      </span>
+                    </summary>
+                    <div class="form-section-content">
+                      <div class="detail-action-list">
+                        <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="5"><button class="btn">Legg til 5</button></form>
+                        <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="10"><button class="btn">Legg til 10</button></form>
+                        <form class="quantity-custom" method="post" action="item/{item['id']}/adjust">
+                          <label>Eget antall
+                            <input name="delta" type="number" step="0.01" inputmode="decimal" required placeholder="15 eller -3">
+                          </label>
+                          <button class="btn">Endre</button>
+                        </form>
+                      </div>
+                    </div>
+                  </details>
+                """
+                management_panel = f"""
+                  <details class="card form-section management-details">
+                    <summary>
+                      <span class="form-section-summary">
+                        Innstillinger og koblinger
+                        <small>Redigering, varsling og NFC</small>
+                      </span>
+                    </summary>
+                    <div class="form-section-content">
+                      <div class="detail-action-list">
+                        <a class="btn" href="item/{item['id']}/edit">Rediger vare</a>
+                        <form method="post" action="item/{item['id']}/tag-link/start">
+                          <button class="btn">{tag_action_label}</button>
+                        </form>
+                        {direct_open_action}
+                        {shopping_toggle}
+                      </div>
+                    </div>
+                  </details>
+                """
                 body = f"""
                   {created_notice}
                   {changed_notice}
                   {scanned_notice}
-                  <div class="card item-detail-card">
-                    {img}
-                    <div class="item-title"><h1>{esc(item['name'])}</h1>{badges}</div>
-                    <div class="qty">{quantity_text}</div>
-                    {opened_text}
-                    <p class="muted">{esc(item['category'])} {("· " + esc(item['location'])) if item['location'] else ""}</p>
-                    {stock_details}
-                    {identifiers}
-                    {f"<p>{esc(item['note'])}</p>" if item['note'] else ""}
-                    <div class="actions">
-                      <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn">Fjern 1</button></form>
-                      <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="1"><button class="btn primary">Legg til 1</button></form>
-                      <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="5"><button class="btn">Legg til 5</button></form>
-                      <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="10"><button class="btn">Legg til 10</button></form>
-                      <form class="quantity-custom" method="post" action="item/{item['id']}/adjust">
-                        <label>Eget antall
-                          <input name="delta" type="number" step="0.01" inputmode="decimal" required placeholder="15 eller -3">
-                        </label>
-                        <button class="btn">Endre</button>
-                      </form>
-                      {consumable_actions}
-                      <form method="post" action="item/{item['id']}/tag-link/start">
-                        <button class="btn">{tag_action_label}</button>
-                      </form>
-                      {direct_open_action}
-                      {shopping_toggle}
-                      <a class="btn" href="item/{item['id']}/edit">Rediger</a>
+                  <div class="item-detail-layout">
+                    <div class="card item-detail-card">
+                      {img}
+                      <div class="item-title"><h1>{esc(item['name'])}</h1>{badges}</div>
+                      {stock_summary}
+                      <p class="muted">{esc(item['category'])} {("· " + esc(item['location'])) if item['location'] else ""}</p>
+                      {stock_details}
+                      {identifiers}
+                      {f"<p>{esc(item['note'])}</p>" if item['note'] else ""}
+                      <section class="daily-actions">
+                        <h2>Hurtighandlinger</h2>
+                        <div class="daily-action-grid">
+                          {consumable_actions}
+                          <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="1"><button class="btn">Legg til 1</button></form>
+                          <form method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn" {"disabled" if float(item['quantity'] or 0) <= 0 else ""}>Fjern 1</button></form>
+                        </div>
+                      </section>
                     </div>
-                    {expiry_panel}
+                    <aside class="item-detail-sidebar">
+                      {adjustment_panel}
+                      {expiry_panel}
+                      {nutrition_panel}
+                      {management_panel}
+                      <details class="card danger-zone">
+                        <summary>Flere valg</summary>
+                        <div class="danger-zone-content">
+                          <p class="muted">Sletting fjerner varen, NFC-koblingen og historikken permanent.</p>
+                              <form method="post" action="item/{item['id']}/delete"
+                                onsubmit="return confirm('Vil du slette varen? Du får mulighet til å angre etterpå.')">
+                            <button class="btn danger">Slett vare</button>
+                          </form>
+                        </div>
+                      </details>
+                    </aside>
                   </div>
-                  {nutrition_panel}
-                  <details class="card danger-zone">
-                    <summary>Flere valg</summary>
-                    <div class="danger-zone-content">
-                      <p class="muted">Sletting fjerner varen, NFC-koblingen og historikken permanent.</p>
-                          <form method="post" action="item/{item['id']}/delete"
-                            onsubmit="return confirm('Vil du slette varen? Du får mulighet til å angre etterpå.')">
-                        <button class="btn danger">Slett vare</button>
-                      </form>
-                    </div>
-                  </details>
                 """
                 self.send_html(item["name"], body)
                 return
@@ -7058,7 +7255,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "api/low-stock":
-            self.send_json({"items": list_items("kind = 'consumable' and shopping_enabled = 1 and min_quantity > 0 and quantity <= min_quantity")})
+            self.send_json({"items": list_items(LOW_STOCK_WHERE)})
             return
 
         if path == "api/alerts":

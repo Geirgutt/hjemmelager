@@ -23,6 +23,16 @@ Hjemmelager skal være en enkel og mobilvennlig Home Assistant-app som:
 
 ## Nå
 
+### 1.4.0 – Ryddig vareflyt
+
+- ✅ Hent næringsinnhold fra det Open Food Facts-endepunktet som leverer komplette produktdata.
+- ✅ Legg inn regresjonstest med strekkoden til Skumma Kulturmjølk fra Tine.
+- ✅ Bruk checkboxen som av/på-bryter og la grense 0 varsle når siste uåpnede pakke åpnes.
+- ✅ Legg «Bruk opp» på varekortet og skill pakkehandlingene tydelig fra pluss og minus.
+- ✅ Rydd varesiden i et automatisk PC- og mobiloppsett med sjeldnere valg bak sammenleggbare grupper.
+- ✅ Vis bare den riktige menyen for skjermstørrelsen.
+- ⬜ Bekreft «Hent på nytt» på den eksisterende varen i Home Assistant.
+
 ### 1.3.1 – Hjelp underveis
 
 - ✅ Legg inn søkbar hjelp for de viktigste arbeidsflytene.

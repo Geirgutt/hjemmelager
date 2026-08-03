@@ -49,7 +49,7 @@ Hjelpesiden kan søkes og er delt i sammenleggbare guider. Hver guide inneholder
 
 På varesiden kan beholdningen endres med **Fjern 1**, **Legg til 1**, **Legg til 5**, **Legg til 10** eller et eget tall. Eget tall kan også være negativt, for eksempel `-3`.
 
-Hurtigknappene `+` og `−` på lagerforsiden endrer antallet uten å åpne varen. Antallet blir kort grønt ved økning og rødt ved reduksjon. Flere raske trykk på samme vare samles i én melding, for eksempel **Melk: fra 8 til 11**. Etter noen sekunders pause starter neste justering på nytt.
+Hurtigknappene `+` og `−` på lagerforsiden endrer antallet uten å åpne varen. På forbruksvarer vises også **Åpne** når det finnes uåpnede pakker, og **Bruk opp** når det finnes en åpnet pakke. Pakkehandlingene er visuelt adskilt fra `+` og `−`. Antallet blir kort grønt ved økning og rødt ved reduksjon. Flere raske trykk på samme vare samles i én melding, for eksempel **Melk: fra 8 til 11**. Etter noen sekunders pause starter neste justering på nytt.
 
 Forbruksvarer kan ha flere holdbarhetspartier. Et parti består av et antall og en best før-dato, for eksempel 6 melk med én dato og 4 med en annen. Ved **Legg til parti** velger du om antallet skal legges til totalbeholdningen, eller om det allerede finnes i totalen og bare skal få en dato. Når beholdningen reduseres, trekkes varer automatisk fra partiet med tidligst dato først.
 
@@ -155,7 +155,7 @@ For forbruksvarer kan du skille mellom uåpnede varer på lager og åpne pakker:
 1. **Antall** er uåpnet lager, for eksempel `2 nye`.
 2. **Åpne pakker** er pakker som er åpnet og normalt ikke skal regnes som lager, for eksempel `1 åpen`.
 3. **Åpne pakke** flytter én fra uåpnet lager til åpne pakker.
-4. **Bruk åpen** reduserer antall åpne pakker.
+4. **Bruk opp** reduserer antall åpne pakker.
 
 ## Næringsinnhold
 
@@ -287,7 +287,7 @@ Hver godkjente versjon skal ha både versjonsnummer og kodenavn.
 Gjeldende versjon er:
 
 ```text
-1.3.1 - Hjelp underveis
+1.4.0 - Ryddig vareflyt
 ```
 
 Kontroller installert versjon på én av disse måtene:
@@ -318,6 +318,8 @@ Et tomt lager viser to enkle veier videre: skann en matvare med strekkode, eller
 4. Bruk **Fjern 1**, **Legg til 1**, **Åpne 1 pakke** og **Bruk 1 åpen** fra varesiden.
 5. Bruk **Handleliste** som sjekkliste i butikken.
 
-For forbruksvarer kan **Varsle ved antall** brukes som grensen for når varen dukker opp på handlelisten. **Fyll opp til** bestemmer hvor mange handlelisten foreslår at du kjøper. Hvis feltet ikke er satt, brukes varslingsgrensen.
+For forbruksvarer kan **Varsle ved antall** brukes som grensen for når varen dukker opp på handlelisten. Verdien `0` betyr at varen legges til når ingen uåpnede pakker er igjen, for eksempel idet siste pakke åpnes. **Varsle og legg på handlelisten når beholdningen blir lav** slår denne funksjonen helt av eller på for varen.
+
+**Fyll opp til** bestemmer hvor mange handlelisten foreslår at du kjøper. Hvis feltet ikke er satt, brukes varslingsgrensen; Hjemmelager foreslår alltid minst én enhet.
 
 Hvis en tom vare skal beholdes, men ikke kjøpes igjen, trykker du **Ikke på handleliste** på varesiden. Hvis varen ikke skal beholdes i Hjemmelager i det hele tatt, åpner du **Flere valg** og velger **Slett vare**. Sletting krever bekreftelse og fjerner også NFC-koblingen og varehistorikken.

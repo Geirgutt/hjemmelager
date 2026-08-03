@@ -157,6 +157,20 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertIn("quickAdjustmentSeries.delete(itemId)", full_page)
         self.assertIn("event.preventDefault()", full_page)
 
+    def test_inventory_card_can_finish_an_opened_package(self):
+        item = self.create_item("Melk", quantity="2", opened_quantity="1")
+        card = self.app.item_card(item)
+
+        self.assertIn(f'action="item/{item["id"]}/open"', card)
+        self.assertIn(f'action="item/{item["id"]}/adjust-opened"', card)
+        self.assertIn("Bruk opp", card)
+        self.assertIn('class="card-stock-actions"', card)
+        self.assertIn('class="card-package-actions"', card)
+
+        no_opened = self.create_item("Kaffe", quantity="2", opened_quantity="0")
+        no_opened_card = self.app.item_card(no_opened)
+        self.assertNotIn("Bruk opp", no_opened_card)
+
     def test_direct_nfc_links_open_hjemmelager_panel_with_tag(self):
         links = self.app.direct_nfc_links(
             "tag med mellomrom/æ",
@@ -212,6 +226,39 @@ class HjemmelagerTests(unittest.TestCase):
         self.app.set_shopping_enabled(item["id"], False)
         self.assertNotIn("Melk", self.app.shopping_list_page())
         self.assertEqual(self.app.get_item(item["id"])["shopping_enabled"], 0)
+
+    def test_zero_threshold_adds_item_when_last_unopened_package_is_opened(self):
+        item = self.create_item(
+            "Kulturmelk",
+            quantity="1",
+            opened_quantity="0",
+            min_quantity="0",
+            target_quantity="2",
+        )
+        self.assertFalse(item["is_low"])
+        self.assertNotIn("Kulturmelk", self.app.shopping_list_page())
+
+        opened = self.app.open_package(item["id"])
+
+        self.assertEqual(opened["quantity"], 0)
+        self.assertEqual(opened["opened_quantity"], 1)
+        self.assertTrue(opened["is_low"])
+        self.assertIn("Kulturmelk", self.app.shopping_list_page())
+        self.assertIn("Kjøp 2 stk", self.app.shopping_list_page())
+        self.assertEqual(self.app.create_alerts_payload()["summary"]["low_stock"], 1)
+
+        self.app.set_shopping_enabled(item["id"], False)
+        self.assertNotIn("Kulturmelk", self.app.shopping_list_page())
+        self.assertEqual(self.app.create_alerts_payload()["summary"]["low_stock"], 0)
+
+    def test_stock_form_explains_zero_threshold_and_checkbox(self):
+        content = self.app.item_form(kind="consumable")
+
+        self.assertIn("0 betyr når ingen uåpnede pakker er igjen", content)
+        self.assertIn(
+            "Varsle og legg på handlelisten når beholdningen blir lav",
+            content,
+        )
 
     def test_shopping_list_groups_remaining_items_by_category(self):
         self.create_item(
@@ -531,7 +578,8 @@ class HjemmelagerTests(unittest.TestCase):
 
         content = self.app.expiry_batches_panel(item)
 
-        self.assertIn("Holdbarhetspartier", content)
+        self.assertIn("Holdbarhet og partier", content)
+        self.assertIn('<details class="card form-section expiry-details">', content)
         self.assertIn("Legg til parti", content)
         self.assertIn("Fjern dato", content)
         self.assertIn("Finnes allerede i totalen", content)
@@ -860,16 +908,16 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertIn(".help-link", scan_content)
         self.assertIn('href="help">Hjelp og veiledning</a>', organize_content)
 
-    def test_help_release_version_is_consistent(self):
+    def test_release_version_is_consistent(self):
         addon_dir = Path(__file__).parents[1]
         config = (addon_dir / "config.yaml").read_text(encoding="utf-8")
         docs = (addon_dir / "DOCS.md").read_text(encoding="utf-8")
         changelog = (addon_dir / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertEqual(self.app.APP_VERSION, "1.3.1")
-        self.assertIn('version: "1.3.1"', config)
-        self.assertIn("1.3.1 - Hjelp underveis", docs)
-        self.assertIn("1.3.1 - Hjelp underveis", changelog)
+        self.assertEqual(self.app.APP_VERSION, "1.4.0")
+        self.assertIn('version: "1.4.0"', config)
+        self.assertIn("1.4.0 - Ryddig vareflyt", docs)
+        self.assertIn("1.4.0 - Ryddig vareflyt", changelog)
 
     def test_alert_blueprint_uses_mobile_app_and_published_sensor(self):
         blueprint_path = Path(__file__).parents[1] / "blueprints" / "daily_inventory_alert.yaml"
@@ -910,7 +958,7 @@ class HjemmelagerTests(unittest.TestCase):
         ).encode()
 
         def fake_urlopen(request, timeout):
-            if "api/v3.6/product" in request.full_url:
+            if "api/v2/product" in request.full_url:
                 return FakeResponse(payload, "application/json")
             return FakeResponse(b"fake-jpeg", "image/jpeg")
 
@@ -926,6 +974,43 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertEqual(product["nutrition"]["serving_unit"], "g")
         self.assertEqual(product["nutrition"]["proteins_100g"], 15)
         self.assertTrue(product["image_data"].startswith("data:image/jpeg;base64,"))
+
+    def test_tine_cultured_milk_lookup_includes_open_food_facts_nutrition(self):
+        payload = json.dumps(
+            {
+                "status": 1,
+                "product": {
+                    "code": "7038010002434",
+                    "product_name": "Skumma Kulturmjolk",
+                    "brands": "TINE",
+                    "quantity": "1000 g",
+                    "nutriments": {
+                        "energy-kcal_100g": 35,
+                        "fat_100g": 0.4,
+                        "saturated-fat_100g": 0.2,
+                        "carbohydrates_100g": 4.3,
+                        "sugars_100g": 4.3,
+                        "proteins_100g": 3.6,
+                        "salt_100g": 0.1,
+                    },
+                },
+            }
+        ).encode()
+
+        with mock.patch.object(
+            self.app,
+            "urlopen",
+            return_value=FakeResponse(payload, "application/json"),
+        ) as mocked_urlopen:
+            product = self.app.lookup_product("7038010002434", force_refresh=True)
+
+        request = mocked_urlopen.call_args.args[0]
+        self.assertIn("/api/v2/product/7038010002434.json", request.full_url)
+        self.assertEqual(product["status"], "found")
+        self.assertEqual(product["nutrition"]["energy_kcal_100g"], 35)
+        self.assertEqual(product["nutrition"]["fat_100g"], 0.4)
+        self.assertEqual(product["nutrition"]["carbohydrates_100g"], 4.3)
+        self.assertEqual(product["nutrition"]["proteins_100g"], 3.6)
 
     def test_forced_product_lookup_bypasses_24_hour_cache(self):
         payloads = [
@@ -966,7 +1051,7 @@ class HjemmelagerTests(unittest.TestCase):
 
     def test_product_lookup_has_manual_fallback(self):
         error = HTTPError(
-            "https://world.openfoodfacts.org/api/v3.6/product/1234567890123.json",
+            "https://world.openfoodfacts.org/api/v2/product/1234567890123.json",
             404,
             "Not Found",
             {},

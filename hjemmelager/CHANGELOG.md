@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.4.0 - Ryddig vareflyt
+
+- Henter produktdata fra Open Food Facts-endepunktet som også returnerer næringsinnhold for produkter som Skumma Kulturmjølk fra Tine.
+- Beholder tvungen oppdatering med «Hent på nytt», slik at eksisterende varer kan få inn næringsverdiene uten å opprettes på nytt.
+- Legger den konkrete strekkoden `7038010002434` inn som regresjonstest.
+- Lar varslingsgrense `0` bety at varen legges på handlelisten når siste uåpnede pakke åpnes; checkboxen styrer om handleliste og varsling er aktivert.
+- Legger «Bruk opp» på varekort når en vare har en åpnet pakke, tydelig adskilt fra `−/+` og «Åpne».
+- Rydder varesiden i responsive PC- og mobiloppsett med hurtighandlinger først og sjeldnere valg i sammenleggbare grupper.
+- Skjuler mobilmenyen korrekt på PC, slik at bare toppmenyen vises på store skjermer.
+
 ## 1.3.1 - Hjelp underveis
 
 - Legger til en søkbar hjelpeside med korte guider for registrering, skanning, lager, holdbarhet, næring, handleliste, organisering, NFC, varsler og backup.
