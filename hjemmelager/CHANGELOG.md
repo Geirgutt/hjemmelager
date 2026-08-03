@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.3 - Samlet bekreftelse
+
+- Samler raske `+`- og `−`-trykk på samme vare til én bekreftelse, for eksempel `Melk: fra 1 til 10`.
+- Starter en ny bekreftelse først etter noen sekunders pause mellom justeringene.
+
 ## 1.1.2 - Kompakt liste
 
 - Gjør listevisningen tydelig mer kompakt enn kortvisningen.

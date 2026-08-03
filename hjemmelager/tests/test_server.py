@@ -147,6 +147,9 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertIn("handleQuickAdjustment", full_page)
         self.assertIn("quantity-increased", full_page)
         self.assertIn("quantity-decreased", full_page)
+        self.assertIn("quickAdjustmentSeries", full_page)
+        self.assertIn(": fra ", full_page)
+        self.assertIn("quickAdjustmentSeries.delete(itemId)", full_page)
         self.assertIn("event.preventDefault()", full_page)
 
     def test_direct_nfc_links_open_hjemmelager_panel_with_tag(self):

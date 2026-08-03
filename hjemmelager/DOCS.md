@@ -43,7 +43,7 @@ Lagerforsiden viser antall varer, hva som må kjøpes, varer med nær best før 
 
 På varesiden kan beholdningen endres med **Fjern 1**, **Legg til 1**, **Legg til 5**, **Legg til 10** eller et eget tall. Eget tall kan også være negativt, for eksempel `-3`.
 
-Hurtigknappene `+` og `−` på lagerforsiden endrer antallet uten å åpne varen. Antallet blir kort grønt ved økning og rødt ved reduksjon. En melding viser samtidig gammelt og nytt antall, for eksempel **Melk: 8 → 9**.
+Hurtigknappene `+` og `−` på lagerforsiden endrer antallet uten å åpne varen. Antallet blir kort grønt ved økning og rødt ved reduksjon. Flere raske trykk på samme vare samles i én melding, for eksempel **Melk: fra 8 til 11**. Etter noen sekunders pause starter neste justering på nytt.
 
 Forbruksvarer kan ha flere holdbarhetspartier. Et parti består av et antall og en best før-dato, for eksempel 6 melk med én dato og 4 med en annen. Ved **Legg til parti** velger du om antallet skal legges til totalbeholdningen, eller om det allerede finnes i totalen og bare skal få en dato. Når beholdningen reduseres, trekkes varer automatisk fra partiet med tidligst dato først.
 

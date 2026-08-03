@@ -26,8 +26,8 @@ except ImportError:
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "1.1.2"
-APP_CODENAME = "Kompakt liste"
+APP_VERSION = "1.1.3"
+APP_CODENAME = "Samlet bekreftelse"
 TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
@@ -3921,6 +3921,8 @@ def page(title, body, base_path=""):
       return new Intl.NumberFormat("nb-NO", {{ maximumFractionDigits: 2 }}).format(value);
     }}
 
+    const quickAdjustmentSeries = new Map();
+
     async function handleQuickAdjustment(form, submitter) {{
       const itemContainer = form.closest("[data-item-id]");
       const quantityDisplay = itemContainer?.querySelector("[data-quantity-display]");
@@ -3946,6 +3948,13 @@ def page(title, body, base_path=""):
         const payload = await response.json();
         const previous = Number(quantityDisplay.dataset.quantityRaw || 0);
         const next = Number(payload.item?.quantity || 0);
+        const existingSeries = quickAdjustmentSeries.get(itemId);
+        if (existingSeries) window.clearTimeout(existingSeries.timer);
+        const series = {{
+          startQuantity: existingSeries?.startQuantity ?? previous,
+          timer: null
+        }};
+        quickAdjustmentSeries.set(itemId, series);
         quantityDisplay.dataset.quantityRaw = String(next);
         quantityValue.textContent = formatQuantity(next);
         const effectClass = delta > 0 ? "quantity-increased" : "quantity-decreased";
@@ -3960,13 +3969,18 @@ def page(title, body, base_path=""):
         if (status) {{
           status.classList.remove("increased", "decreased");
           status.classList.add(delta > 0 ? "increased" : "decreased");
-          status.textContent = itemName + ": " + formatQuantity(previous) + " → " + formatQuantity(next);
-          window.clearTimeout(status.quickFeedbackTimer);
-          status.quickFeedbackTimer = window.setTimeout(() => {{
+          status.textContent = itemName + ": fra " + formatQuantity(series.startQuantity) + " til " + formatQuantity(next);
+          status.quickFeedbackSeries = series;
+        }}
+        series.timer = window.setTimeout(() => {{
+          if (quickAdjustmentSeries.get(itemId) !== series) return;
+          quickAdjustmentSeries.delete(itemId);
+          if (status?.quickFeedbackSeries === series) {{
             status.textContent = "";
             status.classList.remove("increased", "decreased");
-          }}, 2600);
-        }}
+            status.quickFeedbackSeries = null;
+          }}
+        }}, 2600);
       }} catch (error) {{
         if (status) {{
           status.classList.remove("increased", "decreased");
