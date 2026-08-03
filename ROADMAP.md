@@ -23,6 +23,13 @@ Hjemmelager skal være en enkel og mobilvennlig Home Assistant-app som:
 
 ## Nå
 
+### 1.3.1 – Hjelp underveis
+
+- ✅ Legg inn søkbar hjelp for de viktigste arbeidsflytene.
+- ✅ Åpne riktig hjelpetema fra et fast spørsmålstegn i toppfeltet.
+- ✅ Gjør hjelpen tilgjengelig under Mer og behold den kompakt på mobil.
+- ⬜ Bekreft veiledningstekstene i praktisk bruk på telefon.
+
 ### 1.3 – Varsler i hus
 
 - ✅ Publiser varselsensor automatisk til Home Assistant uten direkte port eller manuell REST-konfigurasjon.

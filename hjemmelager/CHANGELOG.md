@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.1 - Hjelp underveis
+
+- Legger til en søkbar hjelpeside med korte guider for registrering, skanning, lager, holdbarhet, næring, handleliste, organisering, NFC, varsler og backup.
+- Viser et fast spørsmålstegn i toppfeltet som åpner riktig hjelpetema fra sentrale sider, også på mobil.
+- Legger en tydelig inngang til hjelp og veiledning under Mer.
+
 ## 1.3.0 - Varsler i hus
 
 - Oppretter og oppdaterer `sensor.hjemmelager_varsler` automatisk gjennom Home Assistant, uten port 8099 eller manuell REST-sensor.

@@ -27,8 +27,8 @@ except ImportError:
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "1.3.0"
-APP_CODENAME = "Varsler i hus"
+APP_VERSION = "1.3.1"
+APP_CODENAME = "Hjelp underveis"
 TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
@@ -2508,7 +2508,22 @@ def page(title, body, base_path=""):
         "Scan kode": "scan",
         "Ny vare": "new",
         "Steder og kategorier": "organize",
+        "Hjelp": "help",
     }.get(title, "")
+    help_topics = {
+        "Varer": "lager",
+        "Legg til": "varer",
+        "Ny vare": "varer",
+        "Ny gjenstand": "varer",
+        "Rediger": "varer",
+        "Scan kode": "scan",
+        "Lav beholdning": "handleliste",
+        "Steder og kategorier": "organisering",
+        "Historikk": "sikkerhet",
+        "Hjelp": "",
+    }
+    help_topic = help_topics.get(title, "nfc" if "NFC" in title else "")
+    help_href = "help" + (f"#{help_topic}" if help_topic else "")
 
     def nav_class(page_name, primary=False):
         classes = ["nav"]
@@ -2608,6 +2623,32 @@ def page(title, body, base_path=""):
       letter-spacing: .01em;
       line-height: 1.45;
       white-space: nowrap;
+    }}
+    .header-actions {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }}
+    .help-link {{
+      display: inline-grid;
+      place-items: center;
+      flex: 0 0 auto;
+      width: 38px;
+      height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      color: var(--text);
+      background: var(--panel);
+      font-size: 1rem;
+      font-weight: 800;
+      line-height: 1;
+      text-decoration: none;
+    }}
+    .help-link:hover,
+    .help-link:focus-visible,
+    .help-link.active {{
+      border-color: var(--accent);
+      color: var(--accent);
     }}
     nav {{
       display: flex;
@@ -3550,6 +3591,36 @@ def page(title, body, base_path=""):
     .form-section-content .form-grid {{
       padding-top: 14px;
     }}
+    .help-intro {{
+      margin-bottom: 10px;
+    }}
+    .help-intro h1,
+    .help-intro p {{
+      margin: 0;
+    }}
+    .help-search {{
+      display: grid;
+      gap: 5px;
+      margin: 12px 0;
+    }}
+    .help-topics {{
+      display: grid;
+      gap: 8px;
+    }}
+    .help-topic ol {{
+      margin: 12px 0;
+      padding-left: 22px;
+    }}
+    .help-topic li + li {{
+      margin-top: 7px;
+    }}
+    .help-topic .actions {{
+      margin-top: 12px;
+    }}
+    .help-empty {{
+      padding: 18px;
+      text-align: center;
+    }}
     .nutrition-lookup {{
       display: grid;
       gap: 8px;
@@ -3865,6 +3936,10 @@ def page(title, body, base_path=""):
       }}
       header nav {{
         display: none;
+      }}
+      .help-link {{
+        width: 36px;
+        height: 36px;
       }}
       main {{
         padding: 8px 12px 12px;
@@ -4191,13 +4266,16 @@ def page(title, body, base_path=""):
         <a class="brand" href=".">{APP_NAME}</a>
         <span class="app-version" aria-label="Versjon {APP_VERSION}">v{APP_VERSION}</span>
       </div>
-      <nav>
-        <a class="{nav_class("items")}" href=".">Varer</a>
-        <a class="{nav_class("scan")}" href="scan">Scan</a>
-        <a class="{nav_class("low")}" href="low-stock">Lav beholdning</a>
-        <a class="{nav_class("organize")}" href="organize">Steder</a>
-        <a class="{nav_class("new", True)}" href="new">Ny</a>
-      </nav>
+      <div class="header-actions">
+        <nav>
+          <a class="{nav_class("items")}" href=".">Varer</a>
+          <a class="{nav_class("scan")}" href="scan">Scan</a>
+          <a class="{nav_class("low")}" href="low-stock">Lav beholdning</a>
+          <a class="{nav_class("organize")}" href="organize">Steder</a>
+          <a class="{nav_class("new", True)}" href="new">Ny</a>
+        </nav>
+        <a class="help-link{" active" if active_page == "help" else ""}" href="{help_href}" aria-label="Hjelp" title="Hjelp">?</a>
+      </div>
     </div>
   </header>
   <main id="main-content" tabindex="-1">{body}</main>
@@ -6013,6 +6091,219 @@ def shopping_list_page():
     """
 
 
+def help_topic(topic_id, title, summary, steps, action_url, action_label):
+    steps_html = "".join(f"<li>{esc(step)}</li>" for step in steps)
+    return f"""
+      <details class="card form-section help-topic" id="{esc(topic_id)}">
+        <summary>
+          <span class="form-section-summary">
+            {esc(title)}
+            <small>{esc(summary)}</small>
+          </span>
+        </summary>
+        <div class="form-section-content">
+          <ol>{steps_html}</ol>
+          <div class="actions">
+            <a class="btn primary" href="{esc(action_url)}">{esc(action_label)}</a>
+          </div>
+        </div>
+      </details>
+    """
+
+
+def help_page():
+    topics = "".join(
+        (
+            help_topic(
+                "kom-i-gang",
+                "Kom i gang",
+                "De viktigste valgene for et nytt lager",
+                (
+                    "Legg til en matvare med skanning, eller opprett en gjenstand manuelt.",
+                    "Velg plassering og kategori slik at varen blir enkel å finne igjen.",
+                    "Sett varslingsgrense på forbruksvarer som skal inn på handlelisten.",
+                ),
+                "new",
+                "Legg til noe",
+            ),
+            help_topic(
+                "scan",
+                "Strekkode og QR",
+                "Kamera, manuelt søk og produktdata",
+                (
+                    "Trykk Skann med kamera og gi nettleseren kameratilgang.",
+                    "Hold strekkoden rolig og godt belyst til koden blir lest.",
+                    "Skriv inn koden manuelt dersom kameraet ikke er tilgjengelig.",
+                    "Kontroller forslaget fra Open Food Facts før varen lagres.",
+                ),
+                "scan",
+                "Åpne skanneren",
+            ),
+            help_topic(
+                "varer",
+                "Varer og gjenstander",
+                "Registrering, redigering og bilder",
+                (
+                    "Velg matvare for ting som brukes opp, og gjenstand for utstyr du beholder.",
+                    "Fyll inn navn og antall først; resten kan legges til senere.",
+                    "Bruk Lagre øverst når du har gjort en rask endring.",
+                    "Hjemmelager spør om lagring eller forkasting hvis du går bort med ulagrede endringer.",
+                ),
+                "new",
+                "Opprett vare eller gjenstand",
+            ),
+            help_topic(
+                "lager",
+                "Antall og åpne pakker",
+                "Raske justeringer i den daglige bruken",
+                (
+                    "Bruk pluss og minus på varekortet for raske lagerendringer.",
+                    "Åpne pakke flytter én enhet fra uåpnet til åpnet beholdning.",
+                    "Bruk Angre rett etter en feil lagerjustering.",
+                    "Historikken viser hva som ble endret og når.",
+                ),
+                ".",
+                "Åpne lageret",
+            ),
+            help_topic(
+                "holdbarhet",
+                "Best før og partier",
+                "Flere datoer på samme vare",
+                (
+                    "Legg til ett parti for hver best før-dato og angi antallet i partiet.",
+                    "Velg om antallet er nytt, eller allerede finnes i totalbeholdningen.",
+                    "Når beholdningen reduseres, brukes partiet med tidligst dato først.",
+                    "Fjern dato gjør partiet udatert uten å fjerne antallet.",
+                ),
+                ".?kind=consumable&expiry=1",
+                "Vis varer med best før",
+            ),
+            help_topic(
+                "naering",
+                "Næringsinnhold",
+                "Automatisk oppslag og manuell redigering",
+                (
+                    "Næringsverdier fylles inn når Open Food Facts har informasjonen.",
+                    "Åpne Næringsinnhold for å kontrollere eller skrive inn verdier selv.",
+                    "Hent på nytt tvinger et nytt produktoppslag uten mellomlager.",
+                    "Verdiene lagres lokalt først når du lagrer varen.",
+                ),
+                "new?kind=consumable",
+                "Legg til matvare",
+            ),
+            help_topic(
+                "handleliste",
+                "Handleliste",
+                "Lav beholdning og foreslått kjøpsmengde",
+                (
+                    "Varsle ved antall bestemmer når varen kommer på handlelisten.",
+                    "Fyll opp til bestemmer hvor mye Hjemmelager foreslår at du kjøper.",
+                    "Kryss av varer mens du handler, eller del listen fra telefonen.",
+                    "Deaktiver handleliste på varer du ikke ønsker varsling for.",
+                ),
+                "low-stock",
+                "Åpne handlelisten",
+            ),
+            help_topic(
+                "organisering",
+                "Steder og kategorier",
+                "Finn igjen varer og bygg en ryddig struktur",
+                (
+                    "Opprett steder som Kjøkken > Kjøleskap eller Bod > Hylle 2.",
+                    "Bruk kategorier på tvers av steder, for eksempel Matvarer eller Verktøy.",
+                    "Flytt en vare ved å redigere plasseringen på varen.",
+                    "Trykk Vis varer ved et sted for å åpne et ferdig filter.",
+                ),
+                "organize",
+                "Administrer steder",
+            ),
+            help_topic(
+                "nfc",
+                "NFC-tagger",
+                "Åpne en vare eller plassering med telefonen",
+                (
+                    "Start NFC-kobling fra varen eller plasseringen i Hjemmelager.",
+                    "Skann taggen med Home Assistant Companion mens Hjemmelager venter.",
+                    "En produkttagg åpner varen; en plasseringstagg åpner et filtrert lager.",
+                    "Direkte åpning kan skrives til taggen etter at koblingen er opprettet.",
+                ),
+                "organize",
+                "Åpne NFC-oppsett",
+            ),
+            help_topic(
+                "varsler",
+                "Home Assistant-varsler",
+                "Daglig beskjed om innkjøp og best før",
+                (
+                    "Åpne Home Assistant-varsler under Mer og kontroller at sensoren er klar.",
+                    "Importer varseloppsettet og velg telefon og tidspunkt.",
+                    "Lagre oppsettet som en vanlig Home Assistant-automasjon.",
+                    "Varselet sendes bare når minst én vare trenger oppmerksomhet.",
+                ),
+                "organize",
+                "Åpne varseloppsett",
+            ),
+            help_topic(
+                "sikkerhet",
+                "Backup, sletting og historikk",
+                "Ta vare på data og rett opp feil",
+                (
+                    "Last ned en sikkerhetskopi regelmessig og oppbevar den utenfor Home Assistant-enheten.",
+                    "Slettede varer kan hentes tilbake umiddelbart med Angre sletting.",
+                    "Gjenoppretting kontrollerer filen og lager først en kopi av dagens lager.",
+                    "CSV-eksport gir en lesbar oversikt for regneark.",
+                ),
+                "organize",
+                "Åpne data og backup",
+            ),
+        )
+    )
+    return f"""
+      <section class="help-intro">
+        <h1>Hjelp og veiledning</h1>
+        <p class="muted">Finn korte steg for funksjonen du bruker.</p>
+      </section>
+      <label class="help-search" for="help-search">
+        Søk i hjelpen
+        <input id="help-search" type="search" autocomplete="off" placeholder="For eksempel NFC, best før eller backup">
+      </label>
+      <section class="help-topics" aria-label="Hjelpetemaer">{topics}</section>
+      <p id="help-empty" class="card help-empty" hidden>Fant ingen guider som passer søket.</p>
+      <script>
+        const helpSearch = document.getElementById("help-search");
+        const helpTopics = [...document.querySelectorAll(".help-topic")];
+        const helpEmpty = document.getElementById("help-empty");
+
+        function openHelpTopic() {{
+          const topicId = decodeURIComponent(window.location.hash.slice(1));
+          if (!topicId) return;
+          const topic = document.getElementById(topicId);
+          if (topic?.matches("details.help-topic")) {{
+            topic.open = true;
+            topic.scrollIntoView({{ block: "start" }});
+          }}
+        }}
+
+        helpSearch.addEventListener("input", () => {{
+          const query = helpSearch.value.trim().toLocaleLowerCase("no");
+          let matches = 0;
+          for (const topic of helpTopics) {{
+            const match = !query || topic.textContent.toLocaleLowerCase("no").includes(query);
+            topic.hidden = !match;
+            if (match) {{
+              matches += 1;
+              if (query) topic.open = true;
+            }}
+          }}
+          helpEmpty.hidden = matches > 0;
+        }});
+
+        window.addEventListener("hashchange", openHelpTopic);
+        openHelpTopic();
+      </script>
+    """
+
+
 def organize_page():
     locations = distinct_values("location")
     categories = distinct_values("category")
@@ -6087,7 +6378,13 @@ def organize_page():
     location_list = "".join(location_entries) or "<li>Ingen steder ennå</li>"
     category_list = "".join(f"<li>{esc(value)}</li>" for value in categories) or "<li>Ingen kategorier ennå</li>"
     return f"""
-    <h1>Steder og kategorier</h1>
+    <div class="page-heading">
+      <div>
+        <h1>Steder og kategorier</h1>
+        <p class="muted">Plasseringer, varsler og sikkerhetskopi.</p>
+      </div>
+      <a class="btn" href="help">Hjelp og veiledning</a>
+    </div>
     <section class="grid">
       <div class="card">
         <h2>Plasseringer</h2>
@@ -6541,6 +6838,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "organize":
             self.send_html("Steder og kategorier", organize_page())
+            return
+
+        if path == "help":
+            self.send_html("Hjelp", help_page())
             return
 
         if path == "activity":

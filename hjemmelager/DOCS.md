@@ -33,11 +33,17 @@ Home Assistant krever at et add-on-repository har `repository.yaml` i roten, og 
 2. Sett et minimumsantall hvis varen skal dukke opp på handlelisten.
 3. Legg eventuelt til bilde, plassering og kategori.
 4. Koble en NFC-tag etter lagring hvis du bruker NFC-klistremerker.
-5. Åpne **Mer** for å kontrollere NFC-status, laste ned backup eller eksportere lageret til CSV.
+5. Åpne **Mer** for hjelp, Home Assistant-varsler, backup eller eksport til CSV.
 
 Lagerforsiden viser antall varer, hva som må kjøpes, varer med nær best før og siste endring. **Historikk** under **Mer** viser hva som har skjedd og åpner varen slik at feil kan rettes.
 
 **Kort** er arbeidsvisningen med hurtigknapper for antall. **Liste** er en tettere oversikt uten `+` og `−`; trykk på en rad for å åpne varen og gjøre endringer.
+
+## Hjelp i appen
+
+Spørsmålstegnet i toppfeltet åpner **Hjelp og veiledning**. Fra skanning, handleliste, registrering, organisering og NFC åpnes det relevante temaet automatisk. Spørsmålstegnet er også tilgjengelig når toppmenyen ellers er skjult på mobil.
+
+Hjelpesiden kan søkes og er delt i sammenleggbare guider. Hver guide inneholder korte trinn og en knapp som åpner funksjonen. Den samme hjelpesiden finnes under **Mer → Hjelp og veiledning**.
 
 ## Antall og holdbarhetspartier
 
@@ -281,7 +287,7 @@ Hver godkjente versjon skal ha både versjonsnummer og kodenavn.
 Gjeldende versjon er:
 
 ```text
-1.3.0 - Varsler i hus
+1.3.1 - Hjelp underveis
 ```
 
 Kontroller installert versjon på én av disse måtene:

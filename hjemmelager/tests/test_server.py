@@ -824,6 +824,53 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertIn("blueprint_import", content)
         self.assertIn("sensor.hjemmelager_varsler", content)
 
+    def test_help_page_covers_main_workflows_and_can_be_searched(self):
+        content = self.app.help_page()
+
+        self.assertEqual(content.count('class="card form-section help-topic"'), 11)
+        for topic_id in (
+            "scan",
+            "varer",
+            "lager",
+            "holdbarhet",
+            "naering",
+            "handleliste",
+            "organisering",
+            "nfc",
+            "varsler",
+            "sikkerhet",
+        ):
+            self.assertIn(f'id="{topic_id}"', content)
+        self.assertIn('id="help-search"', content)
+        self.assertIn("toLocaleLowerCase", content)
+        self.assertIn("Gå til", self.app.help_topic(
+            "test", "Test", "Test", ("Ett steg",), ".", "Gå til test"
+        ))
+
+    def test_question_mark_opens_contextual_help_on_mobile_and_desktop(self):
+        scan_content = self.app.page("Scan kode", "<h1>Test</h1>")
+        organize_content = self.app.organize_page()
+
+        self.assertIn(
+            'class="help-link" href="help#scan" aria-label="Hjelp"',
+            scan_content,
+        )
+        self.assertIn("header nav", scan_content)
+        self.assertIn("display: none", scan_content)
+        self.assertIn(".help-link", scan_content)
+        self.assertIn('href="help">Hjelp og veiledning</a>', organize_content)
+
+    def test_help_release_version_is_consistent(self):
+        addon_dir = Path(__file__).parents[1]
+        config = (addon_dir / "config.yaml").read_text(encoding="utf-8")
+        docs = (addon_dir / "DOCS.md").read_text(encoding="utf-8")
+        changelog = (addon_dir / "CHANGELOG.md").read_text(encoding="utf-8")
+
+        self.assertEqual(self.app.APP_VERSION, "1.3.1")
+        self.assertIn('version: "1.3.1"', config)
+        self.assertIn("1.3.1 - Hjelp underveis", docs)
+        self.assertIn("1.3.1 - Hjelp underveis", changelog)
+
     def test_alert_blueprint_uses_mobile_app_and_published_sensor(self):
         blueprint_path = Path(__file__).parents[1] / "blueprints" / "daily_inventory_alert.yaml"
         content = blueprint_path.read_text(encoding="utf-8")
