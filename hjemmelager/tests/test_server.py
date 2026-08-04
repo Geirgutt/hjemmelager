@@ -959,10 +959,18 @@ class HjemmelagerTests(unittest.TestCase):
         docs = (addon_dir / "DOCS.md").read_text(encoding="utf-8")
         changelog = (addon_dir / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertEqual(self.app.APP_VERSION, "1.4.1")
-        self.assertIn('version: "1.4.1"', config)
+        self.assertEqual(self.app.APP_VERSION, "1.4.2")
+        self.assertIn('version: "1.4.2"', config)
         self.assertIn("1.4.0 - Ryddig vareflyt", docs)
         self.assertIn("1.4.0 - Ryddig vareflyt", changelog)
+
+        for filename, expected_size in (("icon.png", (128, 128)), ("logo.png", (250, 100))):
+            image = (addon_dir / filename).read_bytes()
+            self.assertEqual(image[:8], b"\x89PNG\r\n\x1a\n")
+            self.assertEqual(
+                (int.from_bytes(image[16:20], "big"), int.from_bytes(image[20:24], "big")),
+                expected_size,
+            )
 
     def test_alert_blueprint_uses_mobile_app_and_published_sensor(self):
         blueprint_path = Path(__file__).parents[1] / "blueprints" / "daily_inventory_alert.yaml"

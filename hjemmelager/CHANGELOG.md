@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4.2 - Eget kjennemerke
+
+- Legger til et kvadratisk Hjemmelager-ikon for appoversikten i Home Assistant.
+- Legger til en bred Hjemmelager-logo for appens presentasjonssider.
+
 ## 1.4.1 - Trygge pakkehandlinger
 
 - Erstatter den tvetydige «Åpne»-knappen på varekortet med et tydelig «Pakker»-valg.
