@@ -49,7 +49,7 @@ Hjelpesiden kan søkes og er delt i sammenleggbare guider. Hver guide inneholder
 
 På varesiden kan beholdningen endres med **Fjern 1**, **Legg til 1**, **Legg til 5**, **Legg til 10** eller et eget tall. Eget tall kan også være negativt, for eksempel `-3`.
 
-Hurtigknappene `+` og `−` på lagerforsiden endrer antallet uten å åpne varen. På forbruksvarer vises også **Åpne** når det finnes uåpnede pakker, og **Bruk opp** når det finnes en åpnet pakke. Pakkehandlingene er visuelt adskilt fra `+` og `−`. Antallet blir kort grønt ved økning og rødt ved reduksjon. Flere raske trykk på samme vare samles i én melding, for eksempel **Melk: fra 8 til 11**. Etter noen sekunders pause starter neste justering på nytt.
+Hurtigknappene `+` og `−` på lagerforsiden endrer antallet uten å åpne varen. **Se vare** åpner varesiden. På forbruksvarer åpner **Pakker** et eget valg for **Merk én pakke som åpnet** og **Bruk opp én åpnet pakke**; handlingen utføres uten å forlate lageroversikten og kan angres fra bekreftelsen. Antallet blir kort grønt ved økning og rødt ved reduksjon. Flere raske trykk på samme vare samles i én melding, for eksempel **Melk: fra 8 til 11**. Etter noen sekunders pause starter neste justering på nytt.
 
 Forbruksvarer kan ha flere holdbarhetspartier. Et parti består av et antall og en best før-dato, for eksempel 6 melk med én dato og 4 med en annen. Ved **Legg til parti** velger du om antallet skal legges til totalbeholdningen, eller om det allerede finnes i totalen og bare skal få en dato. Når beholdningen reduseres, trekkes varer automatisk fra partiet med tidligst dato først.
 

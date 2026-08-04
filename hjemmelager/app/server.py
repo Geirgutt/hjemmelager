@@ -27,8 +27,8 @@ except ImportError:
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "1.4.0"
-APP_CODENAME = "Ryddig vareflyt"
+APP_VERSION = "1.4.1"
+APP_CODENAME = "Trygge pakkehandlinger"
 TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
@@ -666,6 +666,7 @@ EVENT_LABELS = {
     "adjustment_undone": "lagerendring angret",
     "opened_adjusted": "åpent antall endret",
     "package_opened": "pakke åpnet",
+    "package_action_undone": "pakkehandling angret",
     "expiry_batch_added": "holdbarhetsparti lagt til",
     "expiry_date_removed": "holdbarhetsdato fjernet",
     "tag_linked": "NFC-tag koblet",
@@ -1942,12 +1943,15 @@ def adjust_opened_item(item_id, delta, note=""):
         row = conn.execute("select * from items where id = ?", (item_id,)).fetchone()
         if not row:
             return None
-        opened_quantity = max(0, float(row["opened_quantity"]) + float(delta))
+        previous_opened_quantity = float(row["opened_quantity"])
+        opened_quantity = max(0, previous_opened_quantity + float(delta))
+        actual_delta = opened_quantity - previous_opened_quantity
         conn.execute(
             "update items set opened_quantity = ?, updated_at = ? where id = ?",
             (opened_quantity, now(), item_id),
         )
-        save_event(conn, item_id, "opened_adjusted", delta, row["quantity"], note)
+        save_event(conn, item_id, "opened_adjusted", actual_delta, row["quantity"], note)
+    request_home_assistant_alert_publish()
     return get_item(item_id)
 
 
@@ -1961,8 +1965,16 @@ def open_package(item_id, note=""):
         actual_delta = quantity - previous_quantity
         opened_quantity = float(row["opened_quantity"]) - actual_delta
         expiry_batches = parse_expiry_batches(row["expiry_batches_json"])
+        consumed = []
         if actual_delta < 0:
-            expiry_batches, _ = consume_expiry_batches(expiry_batches, -actual_delta)
+            expiry_batches, consumed = consume_expiry_batches(expiry_batches, -actual_delta)
+        event_note = note
+        if consumed:
+            event_note = json.dumps(
+                {"source": note, "consumed_expiry_batches": consumed},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
         conn.execute(
             """
             update items
@@ -1979,9 +1991,78 @@ def open_package(item_id, note=""):
                 item_id,
             ),
         )
-        save_event(conn, item_id, "package_opened", actual_delta, quantity, note)
+        save_event(conn, item_id, "package_opened", actual_delta, quantity, event_note)
     request_home_assistant_alert_publish()
     return get_item(item_id)
+
+
+def undo_last_package_action(item_id, max_age_seconds=600):
+    timestamp = now()
+    with db() as conn:
+        item = conn.execute("select * from items where id = ?", (item_id,)).fetchone()
+        if not item:
+            return None
+        event = conn.execute(
+            """
+            select * from events
+            where item_id = ?
+            order by id desc
+            limit 1
+            """,
+            (item_id,),
+        ).fetchone()
+        if (
+            not event
+            or event["action"] not in ("package_opened", "opened_adjusted")
+            or event["delta"] is None
+            or timestamp - int(event["created_at"]) > max_age_seconds
+        ):
+            return {"status": "unavailable", "item": row_to_item(item)}
+
+        quantity = float(item["quantity"])
+        opened_quantity = float(item["opened_quantity"])
+        expiry_batches = parse_expiry_batches(item["expiry_batches_json"])
+        if event["action"] == "package_opened":
+            quantity = max(0, quantity - float(event["delta"]))
+            opened_quantity = max(0, opened_quantity + float(event["delta"]))
+            try:
+                event_note = json.loads(event["note"] or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                event_note = {}
+            if isinstance(event_note, dict):
+                expiry_batches = merge_expiry_batches(
+                    expiry_batches,
+                    event_note.get("consumed_expiry_batches") or [],
+                )
+        else:
+            opened_quantity = max(0, opened_quantity - float(event["delta"]))
+
+        conn.execute(
+            """
+            update items
+            set quantity = ?, opened_quantity = ?, best_before = ?,
+                expiry_batches_json = ?, updated_at = ?
+            where id = ?
+            """,
+            (
+                quantity,
+                opened_quantity,
+                earliest_best_before(expiry_batches),
+                serialize_expiry_batches(expiry_batches),
+                timestamp,
+                item_id,
+            ),
+        )
+        save_event(
+            conn,
+            item_id,
+            "package_action_undone",
+            None,
+            quantity,
+            f"undo:{event['id']}",
+        )
+    request_home_assistant_alert_publish()
+    return {"status": "undone", "item": get_item(item_id)}
 
 
 def start_tag_link(item_id):
@@ -2829,6 +2910,21 @@ def page(title, body, base_path=""):
       border-color: color-mix(in srgb, var(--danger) 55%, var(--line));
       color: var(--danger);
     }}
+    .save-status.package-feedback {{
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      max-width: min(380px, calc(100vw - 24px));
+    }}
+    .save-status.package-feedback span {{
+      min-width: 0;
+      flex: 1;
+    }}
+    .save-status .status-undo {{
+      min-height: 32px;
+      padding: 5px 9px;
+      flex: 0 0 auto;
+    }}
     [data-quantity-display].quantity-increased {{
       animation: quantity-increased 2.4s ease-out;
     }}
@@ -3129,11 +3225,23 @@ def page(title, body, base_path=""):
       color: var(--text);
       text-decoration: none;
     }}
-    .item-name-link::after {{
-      content: "";
-      position: absolute;
-      inset: 0;
-      border-radius: inherit;
+    .item-open-link {{
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      width: fit-content;
+      min-height: 32px;
+      margin-top: 5px;
+      padding: 5px 8px;
+      border-radius: 8px;
+      color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 9%, transparent);
+      font-size: .84rem;
+      font-weight: 760;
+      text-decoration: none;
+    }}
+    .item-open-link:hover {{
+      background: color-mix(in srgb, var(--accent) 15%, transparent);
     }}
     .item-meta {{
       display: grid;
@@ -3171,6 +3279,79 @@ def page(title, body, base_path=""):
       margin-left: auto;
       padding-left: 12px;
       border-left: 1px solid var(--line);
+    }}
+    .package-dialog {{
+      width: min(420px, calc(100vw - 28px));
+      max-height: min(620px, calc(100vh - 40px));
+      margin: auto;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      color: var(--text);
+      background: var(--panel);
+      box-shadow: 0 24px 70px rgb(15 23 42 / 28%);
+    }}
+    .package-dialog[open] {{
+      display: grid;
+      gap: 14px;
+    }}
+    .package-dialog::backdrop {{
+      background: rgb(15 23 42 / 48%);
+      backdrop-filter: blur(2px);
+    }}
+    .package-dialog-header {{
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 12px;
+    }}
+    .package-dialog-header h3,
+    .package-dialog-header p {{
+      margin: 0;
+    }}
+    .package-dialog-header p {{
+      margin-top: 3px;
+    }}
+    .package-dialog-close {{
+      width: 36px;
+      min-height: 36px;
+      padding: 4px;
+      border: 0;
+      border-radius: 50%;
+      color: var(--muted);
+      background: var(--bg);
+      font-size: 1.25rem;
+      cursor: pointer;
+    }}
+    .package-dialog-counts {{
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }}
+    .package-dialog-counts span {{
+      display: grid;
+      gap: 2px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      color: var(--muted);
+      background: var(--bg);
+      font-size: .82rem;
+    }}
+    .package-dialog-counts strong {{
+      color: var(--text);
+      font-size: 1.12rem;
+    }}
+    .package-action-list {{
+      display: grid;
+      gap: 8px;
+    }}
+    .package-action-list form,
+    .package-action-list .btn {{
+      width: 100%;
+    }}
+    .package-action-list form[hidden] {{
+      display: none;
     }}
     .item-card .qty {{
       margin: 5px 0 0;
@@ -4469,6 +4650,131 @@ def page(title, body, base_path=""):
 
     const quickAdjustmentSeries = new Map();
 
+    function updateItemCard(itemContainer, item) {{
+      if (!itemContainer || !item) return;
+      const quantity = Number(item.quantity || 0);
+      const openedQuantity = Number(item.opened_quantity || 0);
+      const quantityDisplay = itemContainer.querySelector("[data-quantity-display]");
+      const quantityValue = quantityDisplay?.querySelector("[data-quantity-value]");
+      const openedValue = itemContainer.querySelector("[data-opened-value]");
+      const packageStock = itemContainer.querySelector("[data-package-stock]");
+      const packageOpened = itemContainer.querySelector("[data-package-opened]");
+      if (quantityDisplay) quantityDisplay.dataset.quantityRaw = String(quantity);
+      if (quantityValue) quantityValue.textContent = formatQuantity(quantity);
+      if (openedValue) openedValue.textContent = formatQuantity(openedQuantity);
+      if (packageStock) packageStock.textContent = formatQuantity(quantity);
+      if (packageOpened) packageOpened.textContent = formatQuantity(openedQuantity);
+      const openForm = itemContainer.querySelector('[data-package-action="open"]');
+      const finishForm = itemContainer.querySelector('[data-package-action="finish"]');
+      const menuTrigger = itemContainer.querySelector(".package-menu-trigger");
+      if (openForm) openForm.hidden = quantity <= 0;
+      if (finishForm) finishForm.hidden = openedQuantity <= 0;
+      if (menuTrigger) menuTrigger.disabled = quantity <= 0 && openedQuantity <= 0;
+    }}
+
+    function showPackageFeedback(status, message, itemId) {{
+      if (!status) return;
+      window.clearTimeout(status.packageFeedbackTimer);
+      status.quickFeedbackSeries = null;
+      status.classList.remove("increased", "decreased");
+      status.classList.add("package-feedback");
+      status.replaceChildren();
+      const messageElement = document.createElement("span");
+      messageElement.textContent = message;
+      const undoButton = document.createElement("button");
+      undoButton.type = "button";
+      undoButton.className = "btn status-undo";
+      undoButton.dataset.undoPackageId = itemId;
+      undoButton.textContent = "Angre";
+      status.append(messageElement, undoButton);
+      status.packageFeedbackTimer = window.setTimeout(() => {{
+        status.replaceChildren();
+        status.classList.remove("package-feedback");
+      }}, 10000);
+    }}
+
+    async function handlePackageAction(form, submitter) {{
+      const itemContainer = form.closest("[data-item-id]");
+      const itemId = itemContainer?.dataset.itemId;
+      const itemName = itemContainer?.dataset.itemName || "Varen";
+      const action = form.dataset.packageAction;
+      const status = document.querySelector(".save-status");
+      const dialog = form.closest("dialog");
+      if (!itemContainer || !itemId || !["open", "finish"].includes(action)) return;
+
+      const actionButtons = dialog?.querySelectorAll(".package-action button") || [];
+      actionButtons.forEach((button) => {{
+        button.disabled = true;
+        button.setAttribute("aria-busy", "true");
+      }});
+      try {{
+        const endpoint = action === "open" ? "open" : "adjust-opened";
+        const body = action === "open"
+          ? new URLSearchParams({{ note: "pakkevalg" }})
+          : new URLSearchParams({{ delta: "-1", note: "pakkevalg" }});
+        const response = await fetch(
+          "api/items/" + encodeURIComponent(itemId) + "/" + endpoint,
+          {{
+            method: "POST",
+            headers: {{
+              "Accept": "application/json",
+              "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
+            }},
+            body
+          }}
+        );
+        if (!response.ok) throw new Error("Kunne ikke oppdatere pakkene");
+        const payload = await response.json();
+        updateItemCard(itemContainer, payload.item);
+        dialog?.close();
+        showPackageFeedback(
+          status,
+          action === "open"
+            ? itemName + ": én pakke er merket som åpnet."
+            : itemName + ": én åpnet pakke er brukt opp.",
+          itemId
+        );
+      }} catch (error) {{
+        if (status) {{
+          status.classList.remove("increased", "decreased", "package-feedback");
+          status.textContent = "Kunne ikke oppdatere pakkene. Prøv igjen.";
+        }}
+      }} finally {{
+        actionButtons.forEach((button) => {{
+          button.disabled = false;
+          button.removeAttribute("aria-busy");
+        }});
+      }}
+    }}
+
+    async function handlePackageUndo(button) {{
+      const itemId = button.dataset.undoPackageId;
+      const itemContainer = document.querySelector('[data-item-id="' + itemId + '"]');
+      const status = document.querySelector(".save-status");
+      if (!itemId || !itemContainer || !status) return;
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+      try {{
+        const response = await fetch(
+          "api/items/" + encodeURIComponent(itemId) + "/undo-package",
+          {{ method: "POST", headers: {{ "Accept": "application/json" }} }}
+        );
+        if (!response.ok) throw new Error("Kunne ikke angre");
+        const payload = await response.json();
+        if (payload.status !== "undone") throw new Error("Endringen kan ikke angres");
+        updateItemCard(itemContainer, payload.item);
+        window.clearTimeout(status.packageFeedbackTimer);
+        status.classList.remove("increased", "decreased", "package-feedback");
+        status.textContent = "Pakkeendringen er angret.";
+        status.packageFeedbackTimer = window.setTimeout(() => {{
+          status.textContent = "";
+        }}, 2600);
+      }} catch (error) {{
+        status.classList.remove("increased", "decreased", "package-feedback");
+        status.textContent = "Denne pakkeendringen kan ikke angres lenger.";
+      }}
+    }}
+
     async function handleQuickAdjustment(form, submitter) {{
       const itemContainer = form.closest("[data-item-id]");
       const quantityDisplay = itemContainer?.querySelector("[data-quantity-display]");
@@ -4501,8 +4807,7 @@ def page(title, body, base_path=""):
           timer: null
         }};
         quickAdjustmentSeries.set(itemId, series);
-        quantityDisplay.dataset.quantityRaw = String(next);
-        quantityValue.textContent = formatQuantity(next);
+        updateItemCard(itemContainer, payload.item);
         const effectClass = delta > 0 ? "quantity-increased" : "quantity-decreased";
         quantityDisplay.classList.remove("quantity-increased", "quantity-decreased");
         void quantityDisplay.offsetWidth;
@@ -4513,6 +4818,8 @@ def page(title, body, base_path=""):
           2500
         );
         if (status) {{
+          window.clearTimeout(status.packageFeedbackTimer);
+          status.classList.remove("package-feedback");
           status.classList.remove("increased", "decreased");
           status.classList.add(delta > 0 ? "increased" : "decreased");
           status.textContent = itemName + ": fra " + formatQuantity(series.startQuantity) + " til " + formatQuantity(next);
@@ -4543,6 +4850,11 @@ def page(title, body, base_path=""):
       if (!(form instanceof HTMLFormElement) || form.dataset.noBusy === "true") return;
       const submitter = event.submitter || form.querySelector('button[type="submit"], button:not([type])');
       if (!submitter) return;
+      if (form.classList.contains("package-action")) {{
+        event.preventDefault();
+        handlePackageAction(form, submitter);
+        return;
+      }}
       if (form.classList.contains("quick-adjust")) {{
         event.preventDefault();
         handleQuickAdjustment(form, submitter);
@@ -4554,6 +4866,22 @@ def page(title, body, base_path=""):
         const status = document.querySelector(".save-status");
         if (status) status.textContent = "Lagrer …";
       }}, 0);
+    }});
+
+    document.addEventListener("click", (event) => {{
+      const packageTrigger = event.target.closest(".package-menu-trigger");
+      if (packageTrigger) {{
+        const dialog = document.getElementById(packageTrigger.getAttribute("aria-controls"));
+        if (dialog instanceof HTMLDialogElement) dialog.showModal();
+        return;
+      }}
+      const closeButton = event.target.closest(".package-dialog-close");
+      if (closeButton) {{
+        closeButton.closest("dialog")?.close();
+        return;
+      }}
+      const undoButton = event.target.closest("[data-undo-package-id]");
+      if (undoButton) handlePackageUndo(undoButton);
     }});
   </script>
 </body>
@@ -4648,29 +4976,54 @@ def item_card(item):
     opened = ""
     package_actions = ""
     if item["kind"] == "consumable":
-        opened = f'<div class="opened-count muted">{fmt_num(item["opened_quantity"])} {esc(item["unit"])} åpne</div>'
-        open_action = (
-            f'<form method="post" action="item/{item["id"]}/open"><button class="btn" title="Flytt én fra lager til åpnet">Åpne</button></form>'
-            if float(item["quantity"] or 0) > 0
-            else ""
+        quantity = float(item["quantity"] or 0)
+        opened_quantity = float(item["opened_quantity"] or 0)
+        opened = (
+            f'<div class="opened-count muted" data-opened-display>'
+            f'<span data-opened-value>{fmt_num(opened_quantity)}</span> '
+            f'{esc(item["unit"])} åpne</div>'
         )
-        use_action = (
-            f'<form method="post" action="item/{item["id"]}/adjust-opened"><input type="hidden" name="delta" value="-1"><button class="btn primary" title="Bruk opp én åpnet pakke">Bruk opp</button></form>'
-            if float(item["opened_quantity"] or 0) > 0
-            else ""
-        )
-        package_actions = (
-            f'<div class="card-package-actions">{open_action}{use_action}</div>'
-            if open_action or use_action
-            else ""
-        )
+        dialog_id = f'package-dialog-{item["id"]}'
+        package_actions = f"""
+          <div class="card-package-actions">
+            <button type="button" class="btn package-menu-trigger"
+                    aria-haspopup="dialog" aria-controls="{dialog_id}"
+                    {"disabled" if quantity <= 0 and opened_quantity <= 0 else ""}>Pakker</button>
+            <dialog class="package-dialog" id="{dialog_id}" aria-labelledby="{dialog_id}-title">
+              <div class="package-dialog-header">
+                <div>
+                  <h3 id="{dialog_id}-title">Pakker for {esc(item['name'])}</h3>
+                  <p class="muted">Velg hva som faktisk skjedde.</p>
+                </div>
+                <button type="button" class="package-dialog-close" aria-label="Lukk pakkevalg">×</button>
+              </div>
+              <div class="package-dialog-counts" aria-live="polite">
+                <span><strong data-package-stock>{fmt_num(quantity)}</strong> uåpnet</span>
+                <span><strong data-package-opened>{fmt_num(opened_quantity)}</strong> åpnet</span>
+              </div>
+              <div class="package-action-list">
+                <form class="package-action" data-package-action="open" method="post"
+                      action="item/{item['id']}/open" {"hidden" if quantity <= 0 else ""}>
+                  <input type="hidden" name="return_to" value="inventory">
+                  <button class="btn">Merk én pakke som åpnet</button>
+                </form>
+                <form class="package-action" data-package-action="finish" method="post"
+                      action="item/{item['id']}/adjust-opened" {"hidden" if opened_quantity <= 0 else ""}>
+                  <input type="hidden" name="delta" value="-1">
+                  <input type="hidden" name="return_to" value="inventory">
+                  <button class="btn primary">Bruk opp én åpnet pakke</button>
+                </form>
+              </div>
+            </dialog>
+          </div>
+        """
     thumb = f'<a href="item/{item["id"]}"><img class="item-thumb" src="{esc(item["image_url"])}" alt=""></a>' if item["image_url"] else '<div class="item-thumb" aria-hidden="true"></div>'
     return f"""
     <article class="card item-card" data-item-id="{item['id']}" data-item-name="{esc(item['name'])}">
       {thumb}
       <div class="item-main">
         <div class="item-title">
-          <h2><a class="item-name-link" href="item/{item['id']}">{esc(item['name'])}</a></h2>
+          <h2>{esc(item['name'])}</h2>
           {badges}
         </div>
         <div class="item-meta muted">
@@ -4679,6 +5032,7 @@ def item_card(item):
         </div>
         <div class="qty" data-quantity-display data-quantity-raw="{float(item['quantity'])}">{quantity_label}</div>
         {opened}
+        <a class="item-open-link" href="item/{item['id']}">Se vare <span aria-hidden="true">›</span></a>
         <div class="actions">
           <div class="card-stock-actions">
             <form class="quick-adjust" method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn" aria-label="Reduser {esc(item['name'])} med én" {"disabled" if float(item['quantity'] or 0) <= 0 else ""}>−</button></form>
@@ -7565,11 +7919,11 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if len(parts) == 3 and parts[2] == "open" and parts[1].isdigit():
                 open_package(int(parts[1]), "web")
-                self.redirect(f"item/{parts[1]}")
+                self.redirect("../../" if data.get("return_to") == "inventory" else f"item/{parts[1]}")
                 return
             if len(parts) == 3 and parts[2] == "adjust-opened" and parts[1].isdigit():
                 adjust_opened_item(int(parts[1]), parse_float(data.get("delta")), "web")
-                self.redirect(f"item/{parts[1]}")
+                self.redirect("../../" if data.get("return_to") == "inventory" else f"item/{parts[1]}")
                 return
             if len(parts) == 3 and parts[2] == "shopping-check" and parts[1].isdigit():
                 set_shopping_checked(
@@ -7652,6 +8006,13 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"error": "item not found"}, HTTPStatus.NOT_FOUND)
                     return
                 self.send_json({"item": item})
+                return
+            if len(parts) == 4 and parts[3] == "undo-package" and parts[2].isdigit():
+                result = undo_last_package_action(int(parts[2]))
+                if not result:
+                    self.send_json({"error": "item not found"}, HTTPStatus.NOT_FOUND)
+                    return
+                self.send_json(result)
                 return
 
         if path.startswith("api/tag/"):

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.1 - Trygge pakkehandlinger
+
+- Erstatter den tvetydige «Åpne»-knappen på varekortet med et tydelig «Pakker»-valg.
+- Lar «Merk én pakke som åpnet» og «Bruk opp én åpnet pakke» skje uten å forlate lageroversikten.
+- Gjør navigeringen til varen tydelig med «Se vare», og legger til «Angre» etter pakkehandlinger.
+
 ## 1.4.0 - Ryddig vareflyt
 
 - Henter produktdata fra Open Food Facts-endepunktet som også returnerer næringsinnhold for produkter som Skumma Kulturmjølk fra Tine.

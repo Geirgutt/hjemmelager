@@ -160,16 +160,61 @@ class HjemmelagerTests(unittest.TestCase):
     def test_inventory_card_can_finish_an_opened_package(self):
         item = self.create_item("Melk", quantity="2", opened_quantity="1")
         card = self.app.item_card(item)
+        full_page = self.app.page("Varer", card)
 
         self.assertIn(f'action="item/{item["id"]}/open"', card)
         self.assertIn(f'action="item/{item["id"]}/adjust-opened"', card)
-        self.assertIn("Bruk opp", card)
+        self.assertIn("Pakker", card)
+        self.assertIn("Merk én pakke som åpnet", card)
+        self.assertIn("Bruk opp én åpnet pakke", card)
+        self.assertIn("Se vare", card)
+        self.assertNotIn(">Åpne</button>", card)
+        self.assertIn('name="return_to" value="inventory"', card)
         self.assertIn('class="card-stock-actions"', card)
         self.assertIn('class="card-package-actions"', card)
+        self.assertIn("handlePackageAction", full_page)
+        self.assertIn("handlePackageUndo", full_page)
+        self.assertIn("undo-package", full_page)
 
         no_opened = self.create_item("Kaffe", quantity="2", opened_quantity="0")
         no_opened_card = self.app.item_card(no_opened)
-        self.assertNotIn("Bruk opp", no_opened_card)
+        self.assertIn('data-package-action="finish"', no_opened_card)
+        self.assertIn(f'action="item/{no_opened["id"]}/adjust-opened" hidden', no_opened_card)
+
+    def test_opening_package_can_be_undone_with_expiry_batch(self):
+        best_before = (date.today() + timedelta(days=5)).isoformat()
+        item = self.create_item(
+            "Kefir",
+            quantity="2",
+            opened_quantity="1",
+            best_before=best_before,
+        )
+
+        opened = self.app.open_package(item["id"], "pakkevalg")
+        result = self.app.undo_last_package_action(item["id"])
+        second_attempt = self.app.undo_last_package_action(item["id"])
+
+        self.assertEqual(opened["quantity"], 1)
+        self.assertEqual(opened["opened_quantity"], 2)
+        self.assertEqual(result["status"], "undone")
+        self.assertEqual(result["item"]["quantity"], 2)
+        self.assertEqual(result["item"]["opened_quantity"], 1)
+        self.assertEqual(
+            result["item"]["expiry_batches"],
+            [{"best_before": best_before, "quantity": 2}],
+        )
+        self.assertEqual(second_attempt["status"], "unavailable")
+
+    def test_finishing_opened_package_can_be_undone(self):
+        item = self.create_item("Melk", quantity="2", opened_quantity="1")
+
+        finished = self.app.adjust_opened_item(item["id"], -1, "pakkevalg")
+        result = self.app.undo_last_package_action(item["id"])
+
+        self.assertEqual(finished["opened_quantity"], 0)
+        self.assertEqual(result["status"], "undone")
+        self.assertEqual(result["item"]["quantity"], 2)
+        self.assertEqual(result["item"]["opened_quantity"], 1)
 
     def test_direct_nfc_links_open_hjemmelager_panel_with_tag(self):
         links = self.app.direct_nfc_links(
@@ -914,8 +959,8 @@ class HjemmelagerTests(unittest.TestCase):
         docs = (addon_dir / "DOCS.md").read_text(encoding="utf-8")
         changelog = (addon_dir / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertEqual(self.app.APP_VERSION, "1.4.0")
-        self.assertIn('version: "1.4.0"', config)
+        self.assertEqual(self.app.APP_VERSION, "1.4.1")
+        self.assertIn('version: "1.4.1"', config)
         self.assertIn("1.4.0 - Ryddig vareflyt", docs)
         self.assertIn("1.4.0 - Ryddig vareflyt", changelog)
 
