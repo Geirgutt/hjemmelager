@@ -27,8 +27,8 @@ except ImportError:
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "1.4.3"
-APP_CODENAME = "Rett på plass"
+APP_VERSION = "1.4.4"
+APP_CODENAME = "Skann begge veier"
 TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
@@ -3295,23 +3295,16 @@ def page(title, body, base_path=""):
       color: var(--text);
       text-decoration: none;
     }}
-    .item-open-link {{
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      width: fit-content;
-      min-height: 32px;
-      margin-top: 5px;
-      padding: 5px 8px;
-      border-radius: 8px;
+    .item-name-link span {{
+      margin-left: 5px;
       color: var(--accent);
-      background: color-mix(in srgb, var(--accent) 9%, transparent);
-      font-size: .84rem;
-      font-weight: 760;
-      text-decoration: none;
+      font-weight: 800;
     }}
-    .item-open-link:hover {{
-      background: color-mix(in srgb, var(--accent) 15%, transparent);
+    .item-name-link:hover {{
+      color: var(--accent);
+      text-decoration: underline;
+      text-decoration-thickness: 2px;
+      text-underline-offset: 3px;
     }}
     .item-meta {{
       display: grid;
@@ -5133,7 +5126,7 @@ def item_card(item):
       {thumb}
       <div class="item-main">
         <div class="item-title">
-          <h2>{esc(item['name'])}</h2>
+          <h2><a class="item-name-link" href="item/{item['id']}">{esc(item['name'])}<span aria-hidden="true">›</span></a></h2>
           {badges}
         </div>
         <div class="item-meta muted">
@@ -5142,7 +5135,6 @@ def item_card(item):
         </div>
         <div class="qty" data-quantity-display data-quantity-raw="{float(item['quantity'])}">{quantity_label}</div>
         {opened}
-        <a class="item-open-link" href="item/{item['id']}">Se vare <span aria-hidden="true">›</span></a>
         <div class="actions">
           <div class="card-stock-actions">
             <form class="quick-adjust" method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn" data-quick-decrease aria-label="Reduser {esc(item['name'])} med én" {"disabled" if float(item['quantity'] or 0) <= 0 else ""}>−</button></form>
@@ -6464,13 +6456,14 @@ def scan_page(location=""):
       const startBtn = document.getElementById('start-scan');
       const stopBtn = document.getElementById('stop-scan');
       const scanLocation = __SCAN_LOCATION_JSON__;
-      // DecodeHintType.TRY_HARDER i den medfølgende ZXing-versjonen. Den prøver
-      // kameraruten rotert når en strekkode ikke kan leses i vanlig retning.
+      // DecodeHintType.TRY_HARDER gir grundigere analyse av hvert kamerabilde.
       const zxingTryHarderHint = 3;
       const scannerHints = new Map([[zxingTryHarderHint, true]]);
       let codeReader = null;
       let scannerControls = null;
+      let rotatedDecodeTimer = null;
       let hasScanned = false;
+      const rotatedFrame = document.createElement('canvas');
       const diagnosticsEl = document.getElementById('scanner-diagnostics');
       const diagnostics = {
         secureContext: window.isSecureContext,
@@ -6520,6 +6513,10 @@ def scan_page(location=""):
       }
 
       function stopScan() {
+        if (rotatedDecodeTimer) {
+          window.clearInterval(rotatedDecodeTimer);
+          rotatedDecodeTimer = null;
+        }
         if (scannerControls) {
           scannerControls.stop();
           scannerControls = null;
@@ -6530,6 +6527,46 @@ def scan_page(location=""):
           }
         }
         video.srcObject = null;
+      }
+
+      function decodeRotatedFrame() {
+        if (hasScanned || !codeReader || video.readyState < 2) return;
+        const sourceWidth = video.videoWidth;
+        const sourceHeight = video.videoHeight;
+        if (!sourceWidth || !sourceHeight) return;
+
+        // Hold analysen lett nok for mobil, men behold nok detaljer til EAN-koder.
+        const scale = Math.min(1, 1280 / Math.max(sourceWidth, sourceHeight));
+        const frameWidth = Math.round(sourceWidth * scale);
+        const frameHeight = Math.round(sourceHeight * scale);
+        if (rotatedFrame.width !== frameHeight) rotatedFrame.width = frameHeight;
+        if (rotatedFrame.height !== frameWidth) rotatedFrame.height = frameWidth;
+        const context = rotatedFrame.getContext('2d', { willReadFrequently: true });
+        if (!context) return;
+
+        context.setTransform(1, 0, 0, 1, 0, 0);
+        context.clearRect(0, 0, rotatedFrame.width, rotatedFrame.height);
+        context.translate(frameHeight / 2, frameWidth / 2);
+        context.rotate(Math.PI / 2);
+        context.drawImage(
+          video,
+          -frameWidth / 2,
+          -frameHeight / 2,
+          frameWidth,
+          frameHeight
+        );
+
+        try {
+          const result = codeReader.decodeFromCanvas(rotatedFrame);
+          if (result && !hasScanned) openCode(result.getText());
+        } catch (err) {
+          // Ingen kode i dette bildet er normalt. Neste bilde prøves automatisk.
+        }
+      }
+
+      function startRotatedDecoding() {
+        if (rotatedDecodeTimer) window.clearInterval(rotatedDecodeTimer);
+        rotatedDecodeTimer = window.setInterval(decodeRotatedFrame, 350);
       }
 
       function openCode(rawCode) {
@@ -6617,6 +6654,7 @@ def scan_page(location=""):
               }
             }
           );
+          startRotatedDecoding();
         } catch (err) {
           const message = err.message || 'Kunne ikke starte kamera.';
           setLastError(message);

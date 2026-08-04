@@ -160,6 +160,11 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertIn("decreaseButton.disabled = quantity <= 0", full_page)
         self.assertIn("submitter.disabled = delta < 0 && currentQuantity <= 0", full_page)
         self.assertIn("cursor: not-allowed", full_page)
+        self.assertIn(
+            f'<a class="item-name-link" href="item/{item["id"]}">Melk<span aria-hidden="true">›</span></a>',
+            card,
+        )
+        self.assertNotIn('class="item-open-link"', card)
 
     def test_inventory_card_can_finish_an_opened_package(self):
         item = self.create_item("Melk", quantity="2", opened_quantity="1")
@@ -171,7 +176,7 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertIn("Pakker", card)
         self.assertIn("Merk én pakke som åpnet", card)
         self.assertIn("Bruk opp én åpnet pakke", card)
-        self.assertIn("Se vare", card)
+        self.assertNotIn("Se vare", card)
         self.assertNotIn(">Åpne</button>", card)
         self.assertIn('name="return_to" value="inventory"', card)
         self.assertIn('class="card-stock-actions"', card)
@@ -963,6 +968,10 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertIn("const zxingTryHarderHint = 3", content)
         self.assertIn("new Map([[zxingTryHarderHint, true]])", content)
         self.assertIn("BrowserMultiFormatReader(scannerHints)", content)
+        self.assertIn("function decodeRotatedFrame()", content)
+        self.assertIn("context.rotate(Math.PI / 2)", content)
+        self.assertIn("codeReader.decodeFromCanvas(rotatedFrame)", content)
+        self.assertIn("startRotatedDecoding()", content)
         self.assertIn("stående eller liggende", content)
 
     def test_location_context_follows_scanner_to_new_item(self):
@@ -1020,9 +1029,9 @@ class HjemmelagerTests(unittest.TestCase):
         docs = (addon_dir / "DOCS.md").read_text(encoding="utf-8")
         changelog = (addon_dir / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertEqual(self.app.APP_VERSION, "1.4.3")
-        self.assertIn('version: "1.4.3"', config)
-        self.assertIn("1.4.3 - Rett på plass", changelog)
+        self.assertEqual(self.app.APP_VERSION, "1.4.4")
+        self.assertIn('version: "1.4.4"', config)
+        self.assertIn("1.4.4 - Skann begge veier", changelog)
         self.assertIn("1.4.0 - Ryddig vareflyt", docs)
         self.assertIn("1.4.0 - Ryddig vareflyt", changelog)
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4.4 - Skann begge veier
+
+- Analyserer også live-bildet rotert 90 grader, slik at strekkoder kan leses uten å snu produktet.
+- Lar varenavnet åpne varen og fjerner den plasskrevende «Se vare»-linjen ved hurtigknappene.
+
 ## 1.4.3 - Rett på plass
 
 - Lar en valgt plassering eller NFC-plassering følge gjennom strekkodeskanning og ny vare, slik at plasseringen er forhåndsutfylt.
