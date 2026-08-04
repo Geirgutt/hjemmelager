@@ -156,6 +156,10 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertIn(": fra ", full_page)
         self.assertIn("quickAdjustmentSeries.delete(itemId)", full_page)
         self.assertIn("event.preventDefault()", full_page)
+        self.assertIn("data-quick-decrease", card)
+        self.assertIn("decreaseButton.disabled = quantity <= 0", full_page)
+        self.assertIn("submitter.disabled = delta < 0 && currentQuantity <= 0", full_page)
+        self.assertIn("cursor: not-allowed", full_page)
 
     def test_inventory_card_can_finish_an_opened_package(self):
         item = self.create_item("Melk", quantity="2", opened_quantity="1")

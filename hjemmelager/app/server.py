@@ -2761,8 +2761,11 @@ def page(title, body, base_path=""):
       cursor: pointer;
     }}
     .btn:disabled {{
-      cursor: wait;
+      cursor: not-allowed;
       opacity: .7;
+    }}
+    .btn[aria-busy="true"] {{
+      cursor: progress;
     }}
     .nav.active {{
       color: var(--accent);
@@ -4659,11 +4662,13 @@ def page(title, body, base_path=""):
       const openedValue = itemContainer.querySelector("[data-opened-value]");
       const packageStock = itemContainer.querySelector("[data-package-stock]");
       const packageOpened = itemContainer.querySelector("[data-package-opened]");
+      const decreaseButton = itemContainer.querySelector("[data-quick-decrease]");
       if (quantityDisplay) quantityDisplay.dataset.quantityRaw = String(quantity);
       if (quantityValue) quantityValue.textContent = formatQuantity(quantity);
       if (openedValue) openedValue.textContent = formatQuantity(openedQuantity);
       if (packageStock) packageStock.textContent = formatQuantity(quantity);
       if (packageOpened) packageOpened.textContent = formatQuantity(openedQuantity);
+      if (decreaseButton) decreaseButton.disabled = quantity <= 0;
       const openForm = itemContainer.querySelector('[data-package-action="open"]');
       const finishForm = itemContainer.querySelector('[data-package-action="finish"]');
       const menuTrigger = itemContainer.querySelector(".package-menu-trigger");
@@ -4840,8 +4845,9 @@ def page(title, body, base_path=""):
           status.textContent = "Kunne ikke oppdatere antallet. Prøv igjen.";
         }}
       }} finally {{
-        submitter.disabled = false;
         submitter.removeAttribute("aria-busy");
+        const currentQuantity = Number(quantityDisplay.dataset.quantityRaw || 0);
+        submitter.disabled = delta < 0 && currentQuantity <= 0;
       }}
     }}
 
@@ -5035,7 +5041,7 @@ def item_card(item):
         <a class="item-open-link" href="item/{item['id']}">Se vare <span aria-hidden="true">›</span></a>
         <div class="actions">
           <div class="card-stock-actions">
-            <form class="quick-adjust" method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn" aria-label="Reduser {esc(item['name'])} med én" {"disabled" if float(item['quantity'] or 0) <= 0 else ""}>−</button></form>
+            <form class="quick-adjust" method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="-1"><button class="btn" data-quick-decrease aria-label="Reduser {esc(item['name'])} med én" {"disabled" if float(item['quantity'] or 0) <= 0 else ""}>−</button></form>
             <form class="quick-adjust" method="post" action="item/{item['id']}/adjust"><input type="hidden" name="delta" value="1"><button class="btn" aria-label="Øk {esc(item['name'])} med én">+</button></form>
           </div>
           {package_actions}
