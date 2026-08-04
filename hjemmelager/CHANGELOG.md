@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.8 - Hjemmelager på GitHub
+
+- Flytter den offisielle repository-adressen til `Geirgutt/hjemmelager`.
+- Oppdaterer installasjons-, app- og blueprint-lenker til det nye navnet.
+- Beholder add-on-slug og dataområde uendret, slik at eksisterende lagerdata ikke påvirkes.
+
 ## 1.4.7 - NFC uten omvei
 
 - Oppdager NFC-lenker også når Home Assistant gjenbruker et Hjemmelager-panel som allerede er åpent.

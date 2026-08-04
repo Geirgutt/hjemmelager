@@ -4,7 +4,7 @@ blueprint:
     Sender et mobilvarsel når Hjemmelager har varer med lav beholdning
     eller nær best før-dato.
   domain: automation
-  source_url: https://github.com/Geirgutt/tr-kker/blob/main/hjemmelager/blueprints/daily_inventory_alert.yaml
+  source_url: https://github.com/Geirgutt/hjemmelager/blob/main/hjemmelager/blueprints/daily_inventory_alert.yaml
   input:
     alert_sensor:
       name: Hjemmelager-sensor

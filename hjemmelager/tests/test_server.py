@@ -1044,14 +1044,26 @@ class HjemmelagerTests(unittest.TestCase):
 
     def test_release_version_is_consistent(self):
         addon_dir = Path(__file__).parents[1]
+        repository_config = (addon_dir.parent / "repository.yaml").read_text(
+            encoding="utf-8"
+        )
         config = (addon_dir / "config.yaml").read_text(encoding="utf-8")
         docs = (addon_dir / "DOCS.md").read_text(encoding="utf-8")
         changelog = (addon_dir / "CHANGELOG.md").read_text(encoding="utf-8")
+        blueprint = (addon_dir / "blueprints" / "daily_inventory_alert.yaml").read_text(
+            encoding="utf-8"
+        )
+        server_source = (addon_dir / "app" / "server.py").read_text(
+            encoding="utf-8"
+        )
 
-        self.assertEqual(self.app.APP_VERSION, "1.4.7")
-        self.assertIn('version: "1.4.7"', config)
-        self.assertIn("1.4.7 - NFC uten omvei", changelog)
-        self.assertIn("1.4.7 - NFC uten omvei", docs)
+        self.assertEqual(self.app.APP_VERSION, "1.4.8")
+        self.assertIn('version: "1.4.8"', config)
+        self.assertIn("1.4.8 - Hjemmelager på GitHub", changelog)
+        self.assertIn("1.4.8 - Hjemmelager på GitHub", docs)
+        for content in (repository_config, config, docs, blueprint, server_source):
+            self.assertNotIn("Geirgutt/tr-kker", content)
+            self.assertIn("Geirgutt/hjemmelager", content)
 
         for filename, expected_size in (("icon.png", (128, 128)), ("logo.png", (250, 100))):
             image = (addon_dir / filename).read_bytes()

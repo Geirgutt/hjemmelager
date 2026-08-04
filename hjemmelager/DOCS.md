@@ -19,7 +19,7 @@ Hjemmelager er en liten “Grocy-light” for Home Assistant. Den er laget for r
 3. Lim inn denne adressen:
 
    ```text
-   https://github.com/Geirgutt/tr-kker
+   https://github.com/Geirgutt/hjemmelager
    ```
 
 4. Trykk **Add**, finn **Hjemmelager**, installer og start.
@@ -287,7 +287,7 @@ Hver godkjente versjon skal ha både versjonsnummer og kodenavn.
 Gjeldende versjon er:
 
 ```text
-1.4.7 - NFC uten omvei
+1.4.8 - Hjemmelager på GitHub
 ```
 
 Kontroller installert versjon på én av disse måtene:

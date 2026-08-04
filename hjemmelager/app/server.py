@@ -27,8 +27,8 @@ except ImportError:
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "1.4.7"
-APP_CODENAME = "NFC uten omvei"
+APP_VERSION = "1.4.8"
+APP_CODENAME = "Hjemmelager på GitHub"
 TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
@@ -41,7 +41,7 @@ MAX_BACKUP_UPLOAD_BYTES = 25_000_000
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 OPEN_FOOD_FACTS_BASE_URL = "https://world.openfoodfacts.org"
 OPEN_FOOD_FACTS_USER_AGENT = (
-    f"{APP_NAME}/{APP_VERSION} (https://github.com/Geirgutt/tr-kker)"
+    f"{APP_NAME}/{APP_VERSION} (https://github.com/Geirgutt/hjemmelager)"
 )
 PRODUCT_LOOKUP_CACHE = {}
 PRODUCT_LOOKUP_CACHE_SECONDS = 24 * 60 * 60
@@ -7472,7 +7472,7 @@ def organize_page():
         alert_bridge["status"], "Varselsensoren gjør seg klar"
     )
     blueprint_url = (
-        "https://raw.githubusercontent.com/Geirgutt/tr-kker/main/"
+        "https://raw.githubusercontent.com/Geirgutt/hjemmelager/main/"
         "hjemmelager/blueprints/daily_inventory_alert.yaml"
     )
     blueprint_import_url = (
