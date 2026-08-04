@@ -27,8 +27,8 @@ except ImportError:
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "1.4.6"
-APP_CODENAME = "Tydelig varesøk"
+APP_VERSION = "1.4.7"
+APP_CODENAME = "NFC uten omvei"
 TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
@@ -4931,7 +4931,10 @@ def page(title, body, base_path=""):
   </footer>
   <div class="save-status" role="status" aria-live="polite"></div>
   <script>
+    let nfcTagOpening = false;
+
     function openNfcTagFromHomeAssistant() {{
+      if (nfcTagOpening) return;
       let topWindow;
       try {{
         topWindow = window.top;
@@ -4945,8 +4948,10 @@ def page(title, body, base_path=""):
       const tagId = queryValues.get("hjemmelager_tag") ||
         fragmentValues.get("hjemmelager-tag");
       if (!tagId) return;
+      nfcTagOpening = true;
       queryValues.delete("hjemmelager_tag");
       fragmentValues.delete("hjemmelager-tag");
+      let parentUrlCleaned = false;
       try {{
         const cleanQuery = queryValues.toString();
         const cleanFragment = fragmentValues.toString();
@@ -4957,13 +4962,57 @@ def page(title, body, base_path=""):
             (cleanQuery ? "?" + cleanQuery : "") +
             (cleanFragment ? "#" + cleanFragment : "")
         );
+        parentUrlCleaned = true;
       }} catch (error) {{
         // Åpningen virker fortsatt selv om Home Assistant ikke lar oss rydde URL-en.
       }}
-      window.location.replace("tag/open?tag_id=" + encodeURIComponent(tagId));
+      try {{
+        if (parentUrlCleaned) {{
+          sessionStorage.removeItem("hjemmelager-pending-nfc");
+        }} else {{
+          const pending = JSON.parse(
+            sessionStorage.getItem("hjemmelager-pending-nfc") || "{{}}"
+          );
+          const signature = tagId + "|" + topWindow.location.href;
+          if (pending.signature === signature && Date.now() - pending.time < 3000) {{
+            nfcTagOpening = false;
+            return;
+          }}
+          sessionStorage.setItem(
+            "hjemmelager-pending-nfc",
+            JSON.stringify({{ signature, time: Date.now() }})
+          );
+        }}
+      }} catch (error) {{
+        // Mellomlagringen er kun ekstra beskyttelse mot dobbel åpning.
+      }}
+      const nfcOpenUrl = new URL("tag/open", document.baseURI);
+      nfcOpenUrl.searchParams.set("tag_id", tagId);
+      window.location.replace(nfcOpenUrl.href);
     }}
 
     openNfcTagFromHomeAssistant();
+
+    const nfcTagPoll = window.setInterval(openNfcTagFromHomeAssistant, 750);
+    window.addEventListener("focus", openNfcTagFromHomeAssistant);
+    document.addEventListener("visibilitychange", () => {{
+      if (!document.hidden) openNfcTagFromHomeAssistant();
+    }});
+    let nfcNavigationWindow = window;
+    try {{
+      nfcNavigationWindow = window.top || window;
+      nfcNavigationWindow.addEventListener("hashchange", openNfcTagFromHomeAssistant);
+      nfcNavigationWindow.addEventListener("popstate", openNfcTagFromHomeAssistant);
+    }} catch (error) {{
+      nfcNavigationWindow = window;
+    }}
+    window.addEventListener("pagehide", () => {{
+      window.clearInterval(nfcTagPoll);
+      if (nfcNavigationWindow !== window) {{
+        nfcNavigationWindow.removeEventListener("hashchange", openNfcTagFromHomeAssistant);
+        nfcNavigationWindow.removeEventListener("popstate", openNfcTagFromHomeAssistant);
+      }}
+    }});
 
     function formatQuantity(value) {{
       return new Intl.NumberFormat("nb-NO", {{ maximumFractionDigits: 2 }}).format(value);

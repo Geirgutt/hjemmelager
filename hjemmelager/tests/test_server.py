@@ -265,7 +265,23 @@ class HjemmelagerTests(unittest.TestCase):
 
         self.assertIn('queryValues.get("hjemmelager_tag")', content)
         self.assertIn('fragmentValues.get("hjemmelager-tag")', content)
-        self.assertIn('window.location.replace("tag/open?tag_id="', content)
+        self.assertIn('new URL("tag/open", document.baseURI)', content)
+        self.assertIn("window.location.replace(nfcOpenUrl.href)", content)
+        self.assertIn("let nfcTagOpening = false", content)
+        self.assertIn(
+            "window.setInterval(openNfcTagFromHomeAssistant, 750)",
+            content,
+        )
+        self.assertIn(
+            'nfcNavigationWindow.addEventListener("hashchange"',
+            content,
+        )
+        self.assertIn('document.addEventListener("visibilitychange"', content)
+
+        for title in ("Scan kode", "Lav beholdning", "Steder og kategorier"):
+            other_page = self.app.page(title, "<h1>Test</h1>", "/ingress")
+            self.assertIn('new URL("tag/open", document.baseURI)', other_page)
+            self.assertIn("window.location.replace(nfcOpenUrl.href)", other_page)
 
     def test_shopping_list_uses_target_quantity(self):
         item = self.create_item(
@@ -1032,11 +1048,10 @@ class HjemmelagerTests(unittest.TestCase):
         docs = (addon_dir / "DOCS.md").read_text(encoding="utf-8")
         changelog = (addon_dir / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertEqual(self.app.APP_VERSION, "1.4.6")
-        self.assertIn('version: "1.4.6"', config)
-        self.assertIn("1.4.6 - Tydelig varesøk", changelog)
-        self.assertIn("1.4.0 - Ryddig vareflyt", docs)
-        self.assertIn("1.4.0 - Ryddig vareflyt", changelog)
+        self.assertEqual(self.app.APP_VERSION, "1.4.7")
+        self.assertIn('version: "1.4.7"', config)
+        self.assertIn("1.4.7 - NFC uten omvei", changelog)
+        self.assertIn("1.4.7 - NFC uten omvei", docs)
 
         for filename, expected_size in (("icon.png", (128, 128)), ("logo.png", (250, 100))):
             image = (addon_dir / filename).read_bytes()

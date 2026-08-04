@@ -287,7 +287,7 @@ Hver godkjente versjon skal ha både versjonsnummer og kodenavn.
 Gjeldende versjon er:
 
 ```text
-1.4.0 - Ryddig vareflyt
+1.4.7 - NFC uten omvei
 ```
 
 Kontroller installert versjon på én av disse måtene:

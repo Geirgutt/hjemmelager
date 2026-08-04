@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.7 - NFC uten omvei
+
+- Oppdager NFC-lenker også når Home Assistant gjenbruker et Hjemmelager-panel som allerede er åpent.
+- Oppdaterer plasseringens filtrerte vareliste uten at brukeren først må trykke på Lager-fanen på nytt.
+- Tvinger plasseringstagger til Lager-visningen selv om brukeren står på Handleliste, Scan eller Mer.
+- Hindrer at samme NFC-åpning behandles flere ganger mens navigasjonen pågår.
+
 ## 1.4.6 - Tydelig varesøk
 
 - Viser navnesøk som et eget valg ved siden av skanning og manuell registrering.
