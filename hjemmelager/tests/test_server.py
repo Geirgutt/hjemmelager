@@ -663,11 +663,13 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertNotIn("Skann strekkode", form)
         self.assertIn('<details class="card form-section" hidden>', form)
 
-    def test_new_item_start_page_offers_three_clear_paths(self):
+    def test_new_item_start_page_offers_clear_paths(self):
         content = self.app.new_item_start_page()
 
         self.assertIn("Skann en vare", content)
-        self.assertIn("Skriv inn en vare", content)
+        self.assertIn("Søk etter en vare", content)
+        self.assertIn("product_search=1", content)
+        self.assertIn("Skriv inn en vare manuelt", content)
         self.assertIn("Legg inn en gjenstand", content)
         self.assertIn('href="scan"', content)
         self.assertIn('href="new?kind=consumable"', content)
@@ -1030,9 +1032,9 @@ class HjemmelagerTests(unittest.TestCase):
         docs = (addon_dir / "DOCS.md").read_text(encoding="utf-8")
         changelog = (addon_dir / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertEqual(self.app.APP_VERSION, "1.4.5")
-        self.assertIn('version: "1.4.5"', config)
-        self.assertIn("1.4.5 - Finn riktig vare", changelog)
+        self.assertEqual(self.app.APP_VERSION, "1.4.6")
+        self.assertIn('version: "1.4.6"', config)
+        self.assertIn("1.4.6 - Tydelig varesøk", changelog)
         self.assertIn("1.4.0 - Ryddig vareflyt", docs)
         self.assertIn("1.4.0 - Ryddig vareflyt", changelog)
 
@@ -1157,6 +1159,11 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertIn('lookupProduct(false, true)', content)
         self.assertIn('id="item-barcode"', content)
 
+        open_search = self.app.item_form(open_product_search=True)
+        self.assertIn('aria-expanded="true"', open_search)
+        self.assertNotIn('id="product-text-search" hidden', open_search)
+        self.assertIn('placeholder="For eksempel Tine kulturmelk" autofocus', open_search)
+
     def test_product_text_search_does_not_cache_a_temporary_error(self):
         with mock.patch.object(
             self.app,
@@ -1169,6 +1176,43 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertEqual(first["status"], "unavailable")
         self.assertEqual(second["status"], "unavailable")
         self.assertEqual(mocked_urlopen.call_count, 2)
+
+    def test_product_text_search_retries_once_when_open_food_facts_is_busy(self):
+        busy_errors = [
+            HTTPError("https://example.test", 503, "Service Unavailable", None, None),
+            HTTPError("https://example.test", 503, "Service Unavailable", None, None),
+        ]
+
+        with mock.patch.object(
+            self.app,
+            "urlopen",
+            side_effect=busy_errors,
+        ) as mocked_urlopen, mock.patch.object(self.app.time, "sleep") as mocked_sleep:
+            result = self.app.search_products("skummet melk")
+
+        self.assertEqual(result["status"], "unavailable")
+        self.assertIn("opptatt", result["message"])
+        self.assertIn("kortere søk", result["message"])
+        self.assertEqual(mocked_urlopen.call_count, 2)
+        mocked_sleep.assert_called_once_with(0.6)
+
+    def test_product_text_search_can_recover_on_retry(self):
+        busy = HTTPError(
+            "https://example.test", 503, "Service Unavailable", None, None
+        )
+        payload = json.dumps(
+            {"products": [{"code": "7038010002151", "product_name": "Melk"}]}
+        ).encode()
+
+        with mock.patch.object(
+            self.app,
+            "urlopen",
+            side_effect=[busy, FakeResponse(payload, "application/json")],
+        ), mock.patch.object(self.app.time, "sleep"):
+            result = self.app.search_products("melk")
+
+        self.assertEqual(result["status"], "found")
+        self.assertEqual(result["candidates"][0]["name"], "Melk")
 
     def test_tine_cultured_milk_lookup_includes_open_food_facts_nutrition(self):
         payload = json.dumps(

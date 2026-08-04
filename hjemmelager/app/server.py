@@ -27,8 +27,8 @@ except ImportError:
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "1.4.5"
-APP_CODENAME = "Finn riktig vare"
+APP_VERSION = "1.4.6"
+APP_CODENAME = "Tydelig varesøk"
 TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
@@ -2496,14 +2496,33 @@ def search_products(query):
         },
     )
     try:
-        with urlopen(request, timeout=6) as response:
-            payload = json.load(response)
-    except (HTTPError, URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
+        for attempt in range(2):
+            try:
+                with urlopen(request, timeout=6) as response:
+                    payload = json.load(response)
+                break
+            except HTTPError as exc:
+                if exc.code == 503 and attempt == 0:
+                    time.sleep(0.6)
+                    continue
+                raise
+    except HTTPError as exc:
         result = {
             "status": "unavailable",
             "query": query,
             "candidates": [],
-            "message": "Kunne ikke søke etter produkter akkurat nå.",
+            "message": (
+                "Open Food Facts er opptatt akkurat nå. Vent litt, eller prøv et kortere søk."
+                if exc.code == 503
+                else "Kunne ikke søke etter produkter akkurat nå."
+            ),
+        }
+    except (URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
+        result = {
+            "status": "unavailable",
+            "query": query,
+            "candidates": [],
+            "message": "Kunne ikke kontakte Open Food Facts akkurat nå.",
         }
     else:
         candidates = []
@@ -5473,13 +5492,22 @@ def new_item_start_page():
               <span class="muted">Hent navn og bilde fra strekkoden</span>
             </span>
           </a>
+          <a class="empty-choice" href="new?kind=consumable&amp;product_search=1">
+            <span class="new-choice-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"></circle><path d="m16 16 4 4"></path></svg>
+            </span>
+            <span class="new-choice-copy">
+              <strong>Søk etter en vare</strong>
+              <span class="muted">Skriv produktnavnet og velg riktig treff</span>
+            </span>
+          </a>
           <a class="empty-choice" href="new?kind=consumable">
             <span class="new-choice-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24"><path d="M5 7h14v12H5zM8 4h8v3M8 11h8M8 15h5"></path></svg>
             </span>
             <span class="new-choice-copy">
-              <strong>Skriv inn en vare</strong>
-              <span class="muted">Mat, husholdning og andre forbruksvarer</span>
+              <strong>Skriv inn en vare manuelt</strong>
+              <span class="muted">Når varen ikke finnes med skanning eller søk</span>
             </span>
           </a>
           <a class="empty-choice" href="new?kind=thing">
@@ -5621,6 +5649,7 @@ def item_form(
     kind="consumable",
     location="",
     add_location="",
+    open_product_search=False,
 ):
     is_new = item is None
     kind = kind if kind in ("consumable", "thing") else "consumable"
@@ -5694,18 +5723,18 @@ def item_form(
         else:
             barcode_step = f"""
               <div class="full barcode-step" id="barcode-step">
-                <div class="product-entry-actions">
+                <div class="product-entry-actions" aria-label="Velg hvordan varen skal finnes">
                   <a class="btn primary barcode-scan-link" href="{esc(scan_url)}">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4"/><path d="M8 9v6M11 9v6M14 9v6M17 9v6"/></svg>
                     Skann strekkode
                   </a>
-                  <button class="btn" id="product-search-toggle" type="button">Søk etter produkt</button>
+                  <button class="btn" id="product-search-toggle" type="button" aria-controls="product-text-search" aria-expanded="{'true' if open_product_search else 'false'}">Søk etter produkt</button>
                 </div>
-                <span class="field-help">Raskeste vei for matvarer og andre produkter med strekkode.</span>
-                <section class="product-text-search" id="product-text-search" hidden>
+                <span class="field-help">Skann strekkoden, søk etter produktnavnet eller fyll inn feltene nedenfor selv.</span>
+                <section class="product-text-search" id="product-text-search" {'hidden' if not open_product_search else ''}>
                   <div class="product-text-search-form">
                     <label for="product-text-search-input">Hva heter produktet?
-                      <input id="product-text-search-input" type="search" autocomplete="off" placeholder="For eksempel Tine kulturmelk">
+                      <input id="product-text-search-input" type="search" autocomplete="off" placeholder="For eksempel Tine kulturmelk" {'autofocus' if open_product_search else ''}>
                     </label>
                     <button class="btn primary" id="product-text-search-button" type="button">Søk</button>
                   </div>
@@ -5806,7 +5835,7 @@ def item_form(
           {barcode_step}
           {kind_field}
           <label class="full">Hva heter {noun}?
-            <input id="item-name" name="name" value="{esc(item['name'])}" placeholder="{example}" required autofocus>
+            <input id="item-name" name="name" value="{esc(item['name'])}" placeholder="{example}" required {'autofocus' if not open_product_search else ''}>
           </label>
           <label>Antall
             <input name="quantity" type="number" step="0.01" value="{fmt_num(item['quantity'])}" inputmode="decimal">
@@ -6385,6 +6414,7 @@ def item_form(
       productSearchToggle?.addEventListener("click", () => {{
         if (!productSearchPanel) return;
         productSearchPanel.hidden = !productSearchPanel.hidden;
+        productSearchToggle.setAttribute("aria-expanded", String(!productSearchPanel.hidden));
         if (!productSearchPanel.hidden) productSearchInput?.focus();
       }});
       async function runProductTextSearch() {{
@@ -7894,6 +7924,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             tag_id = (query.get("tag_id") or [""])[0]
             barcode = (query.get("barcode") or [""])[0]
+            open_product_search = (query.get("product_search") or ["0"])[0] == "1"
             kind = (query.get("kind") or ["consumable"])[0]
             kind = kind if kind in ("consumable", "thing") else "consumable"
             add_location = valid_location_context(
@@ -7902,7 +7933,7 @@ class Handler(BaseHTTPRequestHandler):
             title = "Ny gjenstand" if kind == "thing" else "Ny vare"
             self.send_html(
                 title,
-                f"<h1>{title}</h1>{item_form(tag_id=tag_id, barcode=barcode, kind=kind, location=add_location, add_location=add_location)}",
+                f"<h1>{title}</h1>{item_form(tag_id=tag_id, barcode=barcode, kind=kind, location=add_location, add_location=add_location, open_product_search=open_product_search)}",
             )
             return
 

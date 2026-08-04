@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.6 - Tydelig varesøk
+
+- Viser navnesøk som et eget valg ved siden av skanning og manuell registrering.
+- Åpner søkefeltet direkte når man velger «Søk etter en vare».
+- Prøver søket én gang til ved midlertidig overbelastning og viser en tydeligere feilmelding.
+
 ## 1.4.5 - Finn riktig vare
 
 - Legger til produktsøk på navn som viser kandidater med bilde, merke og pakningsstørrelse.
