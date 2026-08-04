@@ -8,7 +8,7 @@ from copy import deepcopy
 from datetime import date, timedelta
 from pathlib import Path
 from unittest import mock
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 
 class FakeHeaders:
@@ -57,6 +57,7 @@ class HjemmelagerTests(unittest.TestCase):
             conn.execute("delete from locations")
             conn.execute("delete from categories")
         self.app.PRODUCT_LOOKUP_CACHE.clear()
+        self.app.PRODUCT_SEARCH_CACHE.clear()
         self.app.HOME_ASSISTANT_ALERT_EVENT.clear()
         self.app.set_home_assistant_alert_state(
             "starting",
@@ -1029,9 +1030,9 @@ class HjemmelagerTests(unittest.TestCase):
         docs = (addon_dir / "DOCS.md").read_text(encoding="utf-8")
         changelog = (addon_dir / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertEqual(self.app.APP_VERSION, "1.4.4")
-        self.assertIn('version: "1.4.4"', config)
-        self.assertIn("1.4.4 - Skann begge veier", changelog)
+        self.assertEqual(self.app.APP_VERSION, "1.4.5")
+        self.assertIn('version: "1.4.5"', config)
+        self.assertIn("1.4.5 - Finn riktig vare", changelog)
         self.assertIn("1.4.0 - Ryddig vareflyt", docs)
         self.assertIn("1.4.0 - Ryddig vareflyt", changelog)
 
@@ -1098,6 +1099,76 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertEqual(product["nutrition"]["serving_unit"], "g")
         self.assertEqual(product["nutrition"]["proteins_100g"], 15)
         self.assertTrue(product["image_data"].startswith("data:image/jpeg;base64,"))
+
+    def test_product_text_search_returns_candidates_without_replacing_lookup(self):
+        payload = json.dumps(
+            {
+                "products": [
+                    None,
+                    "uventet verdi",
+                    {
+                        "code": "7038010002151",
+                        "product_name_no": "Fettfri skummet melk",
+                        "brands": "Tine, Tine SA",
+                        "quantity": "1000 ml",
+                        "image_front_small_url": (
+                            "https://images.openfoodfacts.org/images/products/test.200.jpg"
+                        ),
+                    },
+                    {
+                        "code": "ikke-en-strekkode",
+                        "product_name": "Skal ikke vises",
+                    },
+                    {
+                        "code": "7038010002151",
+                        "product_name": "Duplikat",
+                    },
+                ]
+            }
+        ).encode()
+
+        with mock.patch.object(
+            self.app,
+            "urlopen",
+            return_value=FakeResponse(payload, "application/json"),
+        ) as mocked_urlopen:
+            result = self.app.search_products("  tine   melk ")
+
+        request = mocked_urlopen.call_args.args[0]
+        self.assertIn("/cgi/search.pl?", request.full_url)
+        self.assertIn("search_terms=tine+melk", request.full_url)
+        self.assertIn("page_size=8", request.full_url)
+        self.assertEqual(result["status"], "found")
+        self.assertEqual(result["query"], "tine melk")
+        self.assertEqual(len(result["candidates"]), 1)
+        self.assertEqual(result["candidates"][0]["barcode"], "7038010002151")
+        self.assertEqual(result["candidates"][0]["brand"], "Tine")
+        self.assertTrue(result["candidates"][0]["image_url"].startswith("https://"))
+        self.assertNotIn("nutrition", result["candidates"][0])
+
+    def test_new_item_form_can_search_by_product_name_then_use_barcode_lookup(self):
+        content = self.app.item_form()
+
+        self.assertIn('id="product-search-toggle"', content)
+        self.assertIn('id="product-text-search-input"', content)
+        self.assertIn('id="product-text-search-button" type="button"', content)
+        self.assertNotIn('<form class="product-text-search-form"', content)
+        self.assertIn('api/product-search?q=', content)
+        self.assertIn('lookupProduct(false, true)', content)
+        self.assertIn('id="item-barcode"', content)
+
+    def test_product_text_search_does_not_cache_a_temporary_error(self):
+        with mock.patch.object(
+            self.app,
+            "urlopen",
+            side_effect=URLError("midlertidig avbrudd"),
+        ) as mocked_urlopen:
+            first = self.app.search_products("melk")
+            second = self.app.search_products("melk")
+
+        self.assertEqual(first["status"], "unavailable")
+        self.assertEqual(second["status"], "unavailable")
+        self.assertEqual(mocked_urlopen.call_count, 2)
 
     def test_tine_cultured_milk_lookup_includes_open_food_facts_nutrition(self):
         payload = json.dumps(

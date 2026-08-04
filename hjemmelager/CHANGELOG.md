@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4.5 - Finn riktig vare
+
+- Legger til produktsøk på navn som viser kandidater med bilde, merke og pakningsstørrelse.
+- Henter fortsatt alle produktdata via den valgte strekkoden, slik at skanning og eksisterende oppslag forblir uendret.
+
 ## 1.4.4 - Skann begge veier
 
 - Analyserer også live-bildet rotert 90 grader, slik at strekkoder kan leses uten å snu produktet.

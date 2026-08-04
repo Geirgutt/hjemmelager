@@ -27,8 +27,8 @@ except ImportError:
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "1.4.4"
-APP_CODENAME = "Skann begge veier"
+APP_VERSION = "1.4.5"
+APP_CODENAME = "Finn riktig vare"
 TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
@@ -45,6 +45,8 @@ OPEN_FOOD_FACTS_USER_AGENT = (
 )
 PRODUCT_LOOKUP_CACHE = {}
 PRODUCT_LOOKUP_CACHE_SECONDS = 24 * 60 * 60
+PRODUCT_SEARCH_CACHE = {}
+PRODUCT_SEARCH_CACHE_SECONDS = 15 * 60
 LOW_STOCK_WHERE = (
     "kind = 'consumable' and shopping_enabled = 1 and quantity <= min_quantity"
 )
@@ -2442,6 +2444,120 @@ def open_food_facts_product_url(barcode):
     return f"{OPEN_FOOD_FACTS_BASE_URL}/product/{barcode}"
 
 
+def open_food_facts_search_image_url(value):
+    image_url = str(value or "").strip()
+    parsed = urlparse(image_url)
+    if parsed.scheme != "https" or parsed.hostname != "images.openfoodfacts.org":
+        return ""
+    return image_url
+
+
+def search_products(query):
+    query = " ".join(str(query or "").split())
+    if len(query) < 2:
+        return {
+            "status": "not_applicable",
+            "query": query,
+            "candidates": [],
+            "message": "Skriv minst to bokstaver for å søke etter et produkt.",
+        }
+
+    query = query[:100]
+    cache_key = query.casefold()
+    cached = PRODUCT_SEARCH_CACHE.get(cache_key)
+    if cached and cached["cached_at"] + PRODUCT_SEARCH_CACHE_SECONDS > now():
+        return cached["result"]
+
+    fields = ",".join(
+        (
+            "code",
+            "product_name",
+            "product_name_no",
+            "product_name_en",
+            "brands",
+            "quantity",
+            "image_front_small_url",
+        )
+    )
+    url = OPEN_FOOD_FACTS_BASE_URL + "/cgi/search.pl?" + urlencode(
+        {
+            "action": "process",
+            "json": "1",
+            "search_terms": query,
+            "page_size": "8",
+            "fields": fields,
+        }
+    )
+    request = Request(
+        url,
+        headers={
+            "User-Agent": OPEN_FOOD_FACTS_USER_AGENT,
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urlopen(request, timeout=6) as response:
+            payload = json.load(response)
+    except (HTTPError, URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
+        result = {
+            "status": "unavailable",
+            "query": query,
+            "candidates": [],
+            "message": "Kunne ikke søke etter produkter akkurat nå.",
+        }
+    else:
+        candidates = []
+        seen_codes = set()
+        products = payload.get("products") if isinstance(payload, dict) else []
+        for product in products or []:
+            if not isinstance(product, dict):
+                continue
+            barcode = str(product.get("code") or "").strip()
+            name = str(
+                product.get("product_name_no")
+                or product.get("product_name")
+                or product.get("product_name_en")
+                or ""
+            ).strip()
+            if (
+                not barcode.isdigit()
+                or not 8 <= len(barcode) <= 14
+                or not name
+                or barcode in seen_codes
+            ):
+                continue
+            seen_codes.add(barcode)
+            candidates.append(
+                {
+                    "barcode": barcode,
+                    "name": name[:160],
+                    "brand": str(product.get("brands") or "").split(",")[0].strip()[:80],
+                    "package_size": str(product.get("quantity") or "").strip()[:80],
+                    "image_url": open_food_facts_search_image_url(
+                        product.get("image_front_small_url")
+                    ),
+                }
+            )
+            if len(candidates) == 8:
+                break
+        result = {
+            "status": "found" if candidates else "not_found",
+            "query": query,
+            "candidates": candidates,
+            "message": (
+                f"Fant {len(candidates)} mulige produkter. Velg det som stemmer."
+                if candidates
+                else "Fant ingen produkter med det navnet. Prøv et kortere eller annet søk."
+            ),
+        }
+
+    if result["status"] != "unavailable":
+        if len(PRODUCT_SEARCH_CACHE) >= 100:
+            PRODUCT_SEARCH_CACHE.clear()
+        PRODUCT_SEARCH_CACHE[cache_key] = {"cached_at": now(), "result": result}
+    return result
+
+
 def parse_serving_size(value):
     match = re.match(r"^\s*(\d+(?:[.,]\d+)?)\s*(.*?)\s*$", str(value or ""))
     if not match:
@@ -4131,6 +4247,86 @@ def page(title, body, base_path=""):
       stroke-linejoin: round;
       stroke-width: 2;
     }}
+    .product-entry-actions {{
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }}
+    .product-entry-actions .btn {{
+      flex: 1 1 180px;
+    }}
+    .product-text-search {{
+      display: grid;
+      gap: 8px;
+      padding-top: 10px;
+      border-top: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line));
+    }}
+    .product-text-search[hidden] {{
+      display: none;
+    }}
+    .product-text-search-form {{
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: end;
+    }}
+    .product-text-search-form label {{
+      min-width: 0;
+    }}
+    .product-search-results {{
+      display: grid;
+      gap: 7px;
+    }}
+    .product-search-result {{
+      display: grid;
+      grid-template-columns: 46px minmax(0, 1fr) auto;
+      gap: 9px;
+      align-items: center;
+      width: 100%;
+      padding: 7px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      color: var(--text);
+      background: var(--panel);
+      text-align: left;
+      cursor: pointer;
+    }}
+    .product-search-result:hover {{
+      border-color: color-mix(in srgb, var(--accent) 48%, var(--line));
+      background: color-mix(in srgb, var(--accent) 6%, var(--panel));
+    }}
+    .product-search-result:focus-visible {{
+      outline: 3px solid color-mix(in srgb, var(--accent) 52%, transparent);
+      outline-offset: 2px;
+    }}
+    .product-search-image {{
+      width: 46px;
+      height: 46px;
+      padding: 3px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      object-fit: contain;
+      background: #fff;
+    }}
+    .product-search-copy {{
+      min-width: 0;
+    }}
+    .product-search-copy strong,
+    .product-search-copy span {{
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }}
+    .product-search-copy span {{
+      color: var(--muted);
+      font-size: .82rem;
+    }}
+    .product-search-result-arrow {{
+      color: var(--accent);
+      font-size: 1.2rem;
+      font-weight: 800;
+    }}
     .barcode-confirmation {{
       display: flex;
       align-items: center;
@@ -4480,6 +4676,12 @@ def page(title, body, base_path=""):
       }}
       .barcode-scan-link {{
         min-height: 42px;
+      }}
+      .product-text-search-form {{
+        grid-template-columns: 1fr;
+      }}
+      .product-text-search-form .btn {{
+        width: 100%;
       }}
       .tag-link-card {{
         gap: 9px;
@@ -5492,11 +5694,24 @@ def item_form(
         else:
             barcode_step = f"""
               <div class="full barcode-step" id="barcode-step">
-                <a class="btn primary barcode-scan-link" href="{esc(scan_url)}">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4"/><path d="M8 9v6M11 9v6M14 9v6M17 9v6"/></svg>
-                  Skann strekkode
-                </a>
+                <div class="product-entry-actions">
+                  <a class="btn primary barcode-scan-link" href="{esc(scan_url)}">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4"/><path d="M8 9v6M11 9v6M14 9v6M17 9v6"/></svg>
+                    Skann strekkode
+                  </a>
+                  <button class="btn" id="product-search-toggle" type="button">Søk etter produkt</button>
+                </div>
                 <span class="field-help">Raskeste vei for matvarer og andre produkter med strekkode.</span>
+                <section class="product-text-search" id="product-text-search" hidden>
+                  <div class="product-text-search-form">
+                    <label for="product-text-search-input">Hva heter produktet?
+                      <input id="product-text-search-input" type="search" autocomplete="off" placeholder="For eksempel Tine kulturmelk">
+                    </label>
+                    <button class="btn primary" id="product-text-search-button" type="button">Søk</button>
+                  </div>
+                  <p class="field-help" id="product-text-search-status" aria-live="polite">Vi søker bare etter kandidater. Når du velger en, hentes produktdata via strekkoden.</p>
+                  <div class="product-search-results" id="product-search-results" aria-live="polite"></div>
+                </section>
               </div>
             """
     remove_image = f"""
@@ -5927,6 +6142,12 @@ def item_form(
       const openFoodFactsBaseUrl = {json.dumps(OPEN_FOOD_FACTS_BASE_URL)};
       const hasStoredImage = {json.dumps(bool(item["image_url"]))};
       const barcodeInput = document.getElementById("item-barcode");
+      const productSearchToggle = document.getElementById("product-search-toggle");
+      const productSearchPanel = document.getElementById("product-text-search");
+      const productSearchInput = document.getElementById("product-text-search-input");
+      const productSearchButton = document.getElementById("product-text-search-button");
+      const productSearchStatus = document.getElementById("product-text-search-status");
+      const productSearchResults = document.getElementById("product-search-results");
       const suggestion = document.getElementById("product-suggestion");
       const refreshProductButton = document.getElementById("nutrition-refresh");
       const nutritionLookupStatus = document.getElementById("nutrition-lookup-status");
@@ -5975,12 +6196,12 @@ def item_form(
         return filledCount;
       }}
 
-      async function lookupProduct(forceRefresh = false) {{
+      async function lookupProduct(forceRefresh = false, replaceName = false) {{
         const lookupBarcode = currentProductBarcode();
         updateOpenFoodFactsLink();
         if (!lookupBarcode) {{
           if (nutritionLookupStatus) nutritionLookupStatus.textContent = "Legg inn en strekkode først.";
-          return;
+          return null;
         }}
         const title = document.getElementById("product-suggestion-title");
         const detail = document.getElementById("product-suggestion-detail");
@@ -6010,7 +6231,7 @@ def item_form(
                 (product.message || "Fant ikke produktet.") +
                 " Du kan registrere eller redigere det hos Open Food Facts.";
             }}
-            return;
+            return product;
           }}
 
           const nameInput = document.getElementById("item-name");
@@ -6018,7 +6239,9 @@ def item_form(
           const categorySelect = document.getElementById("item-category");
           const newCategoryInput = document.getElementById("item-new-category");
           const imageUrlInput = document.getElementById("item-image-url");
-          if (nameInput && !nameInput.value.trim()) nameInput.value = product.name || "";
+          if (nameInput && (replaceName || !nameInput.value.trim())) {{
+            nameInput.value = product.name || "";
+          }}
           if (unitInput && unitInput.value.trim() === "stk") {{
             unitInput.value = product.suggested_unit || "pk";
           }}
@@ -6068,12 +6291,14 @@ def item_form(
               : "Produktet ble funnet, men mangler næringsinnhold. Du kan registrere det hos Open Food Facts.";
           }}
           markItemFormDirty();
+          return product;
         }} catch (error) {{
           if (title) title.textContent = "Fyll inn produktet manuelt";
           if (detail) detail.textContent = "Produktoppslaget er ikke tilgjengelig akkurat nå.";
           if (nutritionLookupStatus) {{
             nutritionLookupStatus.textContent = "Kunne ikke hente produktdata akkurat nå.";
           }}
+          return null;
         }} finally {{
           if (refreshProductButton) {{
             refreshProductButton.disabled = false;
@@ -6081,6 +6306,128 @@ def item_form(
           }}
         }}
       }}
+
+      function renderProductSearchResults(candidates) {{
+        if (!productSearchResults) return;
+        productSearchResults.replaceChildren();
+        for (const candidate of candidates || []) {{
+          const resultButton = document.createElement("button");
+          resultButton.type = "button";
+          resultButton.className = "product-search-result";
+          resultButton.setAttribute("aria-label", "Velg " + candidate.name);
+
+          if (candidate.image_url) {{
+            const image = document.createElement("img");
+            image.className = "product-search-image";
+            image.src = candidate.image_url;
+            image.alt = "";
+            image.referrerPolicy = "no-referrer";
+            image.addEventListener("error", () => {{
+              const placeholder = document.createElement("span");
+              placeholder.className = "product-search-image";
+              placeholder.setAttribute("aria-hidden", "true");
+              image.replaceWith(placeholder);
+            }});
+            resultButton.append(image);
+          }} else {{
+            const placeholder = document.createElement("span");
+            placeholder.className = "product-search-image";
+            placeholder.setAttribute("aria-hidden", "true");
+            resultButton.append(placeholder);
+          }}
+
+          const copy = document.createElement("span");
+          copy.className = "product-search-copy";
+          const title = document.createElement("strong");
+          title.textContent = candidate.name;
+          const detail = document.createElement("span");
+          detail.textContent = [candidate.brand, candidate.package_size, candidate.barcode]
+            .filter(Boolean)
+            .join(" · ");
+          copy.append(title, detail);
+          resultButton.append(copy);
+
+          const arrow = document.createElement("span");
+          arrow.className = "product-search-result-arrow";
+          arrow.setAttribute("aria-hidden", "true");
+          arrow.textContent = "›";
+          resultButton.append(arrow);
+          resultButton.addEventListener("click", () => chooseProductSearchCandidate(candidate));
+          productSearchResults.append(resultButton);
+        }}
+      }}
+
+      async function chooseProductSearchCandidate(candidate) {{
+        if (!barcodeInput || !candidate?.barcode) return;
+        productSearchResults?.querySelectorAll("button").forEach((button) => {{
+          button.disabled = true;
+        }});
+        barcodeInput.value = candidate.barcode;
+        markItemFormDirty();
+        updateOpenFoodFactsLink();
+        if (productSearchStatus) {{
+          productSearchStatus.textContent = "Henter hele produktet for " + candidate.name + " …";
+        }}
+        const product = await lookupProduct(false, true);
+        if (product?.status === "found") {{
+          if (productSearchStatus) {{
+            productSearchStatus.textContent =
+              "Valgt " + product.name + ". Produktdata er fylt inn i skjemaet.";
+          }}
+        }} else if (productSearchStatus) {{
+          productSearchStatus.textContent = product?.message || "Kunne ikke hente produktdata akkurat nå.";
+        }}
+        productSearchResults?.querySelectorAll("button").forEach((button) => {{
+          button.disabled = false;
+        }});
+      }}
+
+      productSearchToggle?.addEventListener("click", () => {{
+        if (!productSearchPanel) return;
+        productSearchPanel.hidden = !productSearchPanel.hidden;
+        if (!productSearchPanel.hidden) productSearchInput?.focus();
+      }});
+      async function runProductTextSearch() {{
+        const query = productSearchInput?.value.trim() || "";
+        if (query.length < 2) {{
+          if (productSearchStatus) {{
+            productSearchStatus.textContent = "Skriv minst to bokstaver for å søke etter et produkt.";
+          }}
+          return;
+        }}
+        if (productSearchButton) {{
+          productSearchButton.disabled = true;
+          productSearchButton.textContent = "Søker …";
+        }}
+        productSearchResults?.replaceChildren();
+        if (productSearchStatus) productSearchStatus.textContent = "Søker etter produkter …";
+        try {{
+          const response = await fetch(
+            "api/product-search?q=" + encodeURIComponent(query),
+            {{ headers: {{ "Accept": "application/json" }}, cache: "no-store" }}
+          );
+          const result = await response.json();
+          if (productSearchStatus) productSearchStatus.textContent = result.message || "";
+          if (result.status === "found") {{
+            renderProductSearchResults(result.candidates);
+          }}
+        }} catch (error) {{
+          if (productSearchStatus) {{
+            productSearchStatus.textContent = "Kunne ikke søke etter produkter akkurat nå.";
+          }}
+        }} finally {{
+          if (productSearchButton) {{
+            productSearchButton.disabled = false;
+            productSearchButton.textContent = "Søk";
+          }}
+        }}
+      }}
+      productSearchButton?.addEventListener("click", runProductTextSearch);
+      productSearchInput?.addEventListener("keydown", (event) => {{
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        runProductTextSearch();
+      }});
       barcodeInput?.addEventListener("input", () => updateOpenFoodFactsLink());
       refreshProductButton?.addEventListener("click", () => lookupProduct(true));
       updateOpenFoodFactsLink();
@@ -7928,6 +8275,12 @@ class Handler(BaseHTTPRequestHandler):
             barcode = (query.get("barcode") or [""])[0]
             force_refresh = (query.get("refresh") or ["0"])[0] == "1"
             self.send_json(lookup_product(barcode, force_refresh=force_refresh))
+            return
+
+        if path == "api/product-search":
+            query = parse_qs(urlparse(self.path).query)
+            search_query = (query.get("q") or [""])[0]
+            self.send_json(search_products(search_query))
             return
 
         if path == "api/version":
