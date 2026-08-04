@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.3 - Rett på plass
+
+- Lar en valgt plassering eller NFC-plassering følge gjennom strekkodeskanning og ny vare, slik at plasseringen er forhåndsutfylt.
+- Legger til «Skann vare hit» og «Skriv inn vare her» i en filtrert plassering, med rask vei videre til neste vare etter lagring.
+- Leser strekkoder både stående og liggende i live-kameraet.
+- Holder minusknappen riktig aktivert eller deaktivert når antallet endres uten refresh.
+
 ## 1.4.2 - Eget kjennemerke
 
 - Legger til et kvadratisk Hjemmelager-ikon for appoversikten i Home Assistant.

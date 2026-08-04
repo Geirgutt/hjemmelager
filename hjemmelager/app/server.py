@@ -27,8 +27,8 @@ except ImportError:
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "1.4.2"
-APP_CODENAME = "Eget kjennemerke"
+APP_VERSION = "1.4.3"
+APP_CODENAME = "Rett på plass"
 TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
@@ -1428,6 +1428,11 @@ def new_item_redirect(item, data):
     ):
         start_tag_link(item["id"])
         return f"item/{item['id']}/tag-link"
+    add_location = valid_location_context(data.get("add_location"))
+    if add_location and add_location == item["location"]:
+        return f"item/{item['id']}?" + urlencode(
+            {"created": "1", "add_location": add_location}
+        )
     return f"item/{item['id']}?created=1"
 
 
@@ -1449,8 +1454,36 @@ def safe_form_return_target(value):
     return value
 
 
-def created_item_notice(item):
+def valid_location_context(value):
+    location = str(value or "").strip()
+    if not location:
+        return ""
+    return location if location in distinct_values("location") else ""
+
+
+def created_item_notice(item, add_location=""):
     noun = "Gjenstanden" if item["kind"] == "thing" else "Varen"
+    add_location = valid_location_context(add_location)
+    if add_location and add_location == item["location"]:
+        scan_url = "scan?" + urlencode({"location": add_location})
+        new_url = "new?" + urlencode(
+            {"kind": item["kind"], "location": add_location}
+        )
+        location_url = ".?" + urlencode(
+            {"location": add_location, "kind": "all"}
+        )
+        return f"""
+          <section class="created-notice location-created-notice">
+            <span class="created-check" aria-hidden="true">✓</span>
+            <h2>{noun} er lagt til i {esc(add_location)}</h2>
+            <p class="muted">Fortsett med samme plassering, eller gå tilbake til oversikten.</p>
+            <div class="actions">
+              <a class="btn primary" href="{esc(scan_url)}">Skann neste vare hit</a>
+              <a class="btn" href="{esc(new_url)}">Skriv inn en til</a>
+              <a class="btn" href="{esc(location_url)}">Ferdig – vis plasseringen</a>
+            </div>
+          </section>
+        """
     return f"""
       <section class="created-notice">
         <span class="created-check" aria-hidden="true">✓</span>
@@ -2564,10 +2597,11 @@ def item_id_from_scanned_url(code):
     return None
 
 
-def scanned_code_redirect(code):
+def scanned_code_redirect(code, location=""):
     code = (code or "").strip()
+    location = valid_location_context(location)
     if not code:
-        return "scan"
+        return "scan" + ("?" + urlencode({"location": location}) if location else "")
 
     item_id = item_id_from_scanned_url(code)
     if item_id and get_item(item_id):
@@ -2577,7 +2611,10 @@ def scanned_code_redirect(code):
     if item:
         return f"item/{item['id']}"
 
-    return "new?" + urlencode({"barcode": code})
+    params = {"barcode": code}
+    if location:
+        params["location"] = location
+    return "new?" + urlencode(params)
 
 
 def page(title, body, base_path=""):
@@ -2962,6 +2999,36 @@ def page(title, body, base_path=""):
       display: grid;
       gap: 10px;
       margin-bottom: 14px;
+    }}
+    .location-add-panel {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+      padding: 10px 12px;
+      border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--line));
+      border-radius: 12px;
+      background: color-mix(in srgb, var(--accent) 9%, var(--panel));
+    }}
+    .location-add-copy {{
+      display: grid;
+      gap: 1px;
+      min-width: 0;
+    }}
+    .location-add-copy span {{
+      color: var(--muted);
+      font-size: .78rem;
+      font-weight: 700;
+    }}
+    .location-add-copy strong {{
+      overflow-wrap: anywhere;
+    }}
+    .location-add-actions {{
+      display: flex;
+      gap: 7px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
     }}
     .search-row {{
       display: grid;
@@ -3795,6 +3862,27 @@ def page(title, body, base_path=""):
     .form-card > p {{
       margin: -5px 0 0;
     }}
+    .location-form-context {{
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      flex-wrap: wrap;
+      padding: 9px 10px;
+      border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line));
+      border-radius: 10px;
+      background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+    }}
+    .location-form-context span {{ color: var(--muted); }}
+    .location-form-context button {{
+      margin-left: auto;
+      padding: 0;
+      border: 0;
+      color: var(--accent);
+      background: transparent;
+      cursor: pointer;
+      font-size: .84rem;
+      font-weight: 700;
+    }}
     .form-top-save {{
       display: flex;
       align-items: center;
@@ -4314,6 +4402,22 @@ def page(title, body, base_path=""):
         row-gap: 7px;
         margin-bottom: 8px;
       }}
+      .location-add-panel {{
+        align-items: stretch;
+        flex-direction: column;
+        padding: 9px 10px;
+      }}
+      .location-add-actions {{
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        width: 100%;
+      }}
+      .location-add-actions .btn {{ justify-content: center; }}
+      .scanner-location-context {{
+        align-items: center;
+        flex-direction: row;
+      }}
+      .scanner-location-context .btn {{ width: auto; }}
       .filter-panel {{
         grid-column: 1;
       }}
@@ -5091,8 +5195,11 @@ def query_link(params, **updates):
     return "." + (f"?{query}" if query else "")
 
 
-def inventory_empty_state(kind_view, filtered=False, clear_url="."):
+def inventory_empty_state(kind_view, filtered=False, clear_url=".", add_url=""):
     if filtered:
+        add_url = add_url or (
+            f"new?kind={'thing' if kind_view == 'thing' else 'consumable'}"
+        )
         return f"""
           <section class="empty-state">
             <span class="empty-state-icon" aria-hidden="true">
@@ -5102,7 +5209,7 @@ def inventory_empty_state(kind_view, filtered=False, clear_url="."):
             <p class="muted">Prøv et annet søk, eller fjern filtrene.</p>
             <div class="empty-state-actions">
               <a class="btn primary" href="{clear_url}">Vis hele lageret</a>
-              <a class="btn" href="new?kind={'thing' if kind_view == 'thing' else 'consumable'}">Legg til ny</a>
+              <a class="btn" href="{esc(add_url)}">Legg til ny</a>
             </div>
           </section>
         """
@@ -5313,9 +5420,18 @@ def nutrition_details_panel(item):
     """
 
 
-def item_form(item=None, tag_id="", barcode="", kind="consumable"):
+def item_form(
+    item=None,
+    tag_id="",
+    barcode="",
+    kind="consumable",
+    location="",
+    add_location="",
+):
     is_new = item is None
     kind = kind if kind in ("consumable", "thing") else "consumable"
+    location = str(location or "").strip()
+    add_location = str(add_location or "").strip()
     item = item or {
         "id": None,
         "name": "",
@@ -5327,7 +5443,7 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
         "target_quantity": 0,
         "price": 0,
         "best_before": "",
-        "location": "",
+        "location": location,
         "category": "",
         "tag_id": tag_id,
         "barcode": barcode,
@@ -5348,6 +5464,20 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
     nutrition_section = nutrition_form_section(item, is_thing)
     categories = distinct_values("category")
     locations = distinct_values("location")
+    scan_url = "scan" + (
+        "?" + urlencode({"location": add_location}) if add_location else ""
+    )
+    location_context = (
+        f"""
+          <div class="location-form-context full">
+            <span>Legges i</span>
+            <strong>{esc(add_location)}</strong>
+            <button type="button" data-open-location-details>Endre plassering</button>
+          </div>
+        """
+        if is_new and add_location
+        else ""
+    )
     barcode_step = ""
     if is_new and not is_thing:
         if item["barcode"]:
@@ -5355,7 +5485,7 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
               <div class="full barcode-step" id="barcode-step">
                 <div class="barcode-confirmation">
                   <span><strong>Strekkode lest</strong><br><span class="muted">{esc(item["barcode"])}</span></span>
-                  <a class="btn" href="scan">Skann på nytt</a>
+                  <a class="btn" href="{esc(scan_url)}">Skann på nytt</a>
                 </div>
                 <div class="product-suggestion" id="product-suggestion">
                   <div class="product-suggestion-image" id="product-suggestion-placeholder" aria-hidden="true"></div>
@@ -5368,9 +5498,9 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
               </div>
             """
         else:
-            barcode_step = """
+            barcode_step = f"""
               <div class="full barcode-step" id="barcode-step">
-                <a class="btn primary barcode-scan-link" href="scan">
+                <a class="btn primary barcode-scan-link" href="{esc(scan_url)}">
                   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4"/><path d="M8 9v6M11 9v6M14 9v6M17 9v6"/></svg>
                   Skann strekkode
                 </a>
@@ -5460,10 +5590,12 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
     return f"""
     <form class="stack" id="item-form" method="post" action="{action}" enctype="multipart/form-data">
       <input id="item-form-return-to" name="return_to" type="hidden" value="">
+      <input name="add_location" type="hidden" value="{esc(add_location)}">
       <section class="card form-card">
         <h2>Det viktigste</h2>
         <p class="muted">Navn er nok. Alt annet kan legges til senere.</p>
         <div class="form-grid">
+          {location_context}
           {barcode_step}
           {kind_field}
           <label class="full">Hva heter {noun}?
@@ -5521,7 +5653,7 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
         </div>
       </details>
 
-      <details class="card form-section">
+      <details class="card form-section" id="item-location-details">
         <summary>
           <span class="form-section-summary">
             Plassering og kategori
@@ -5607,10 +5739,18 @@ def item_form(item=None, tag_id="", barcode="", kind="consumable"):
       const unsavedSave = document.getElementById("unsaved-save");
       const unsavedDiscard = document.getElementById("unsaved-discard");
       const unsavedStay = document.getElementById("unsaved-stay");
+      const locationDetails = document.getElementById("item-location-details");
+      const openLocationDetails = document.querySelector("[data-open-location-details]");
       let itemFormDirty = false;
       let itemFormSubmitting = false;
       let unsavedHistoryGuard = false;
       let pendingNavigation = null;
+
+      openLocationDetails?.addEventListener("click", () => {{
+        if (!locationDetails) return;
+        locationDetails.open = true;
+        locationDetails.scrollIntoView({{ behavior: "smooth", block: "start" }});
+      }});
 
       function appRelativeTarget(urlValue) {{
         try {{
@@ -6273,22 +6413,43 @@ def location_tag_open_setup_page(location, addon_slug=None):
     )
 
 
-def scan_page():
-    return """
+def scan_page(location=""):
+    location = str(location or "").strip()
+    location_context = (
+        f"""
+          <section class="location-add-panel scanner-location-context">
+            <div class="location-add-copy">
+              <span>Varene legges i</span>
+              <strong>{esc(location)}</strong>
+            </div>
+            <a class="btn" href=".?{urlencode({'location': location, 'kind': 'all'})}">Avbryt</a>
+          </section>
+        """
+        if location
+        else ""
+    )
+    location_hidden = (
+        f'<input type="hidden" name="location" value="{esc(location)}">'
+        if location
+        else ""
+    )
+    content = """
     <section class="stack">
       <h1>Skann kode</h1>
+      __SCAN_LOCATION_CONTEXT__
       <div class="card stack">
         <video id="scanner-video" class="scanner" playsinline muted></video>
         <div class="actions">
           <button id="start-scan" class="btn primary" type="button">Skann med kamera</button>
           <button id="stop-scan" class="btn" type="button">Stopp</button>
         </div>
-        <p id="scan-status" class="muted">Trykk «Skann med kamera» og hold strekkoden rolig i bildet.</p>
+        <p id="scan-status" class="muted">Trykk «Skann med kamera» og hold strekkoden rolig i bildet – stående eller liggende.</p>
         <details class="scanner-diagnostics-wrap">
           <summary>Feilsøking</summary>
           <dl id="scanner-diagnostics" class="scanner-diagnostics" aria-live="polite"></dl>
         </details>
         <form class="stack" method="get" action="scan/result">
+          __SCAN_LOCATION_HIDDEN__
           <label>Manuell kode
             <input name="code" autocomplete="off" inputmode="text" placeholder="Lim inn eller skriv strekkode/QR-kode">
           </label>
@@ -6302,6 +6463,11 @@ def scan_page():
       const statusEl = document.getElementById('scan-status');
       const startBtn = document.getElementById('start-scan');
       const stopBtn = document.getElementById('stop-scan');
+      const scanLocation = __SCAN_LOCATION_JSON__;
+      // DecodeHintType.TRY_HARDER i den medfølgende ZXing-versjonen. Den prøver
+      // kameraruten rotert når en strekkode ikke kan leses i vanlig retning.
+      const zxingTryHarderHint = 3;
+      const scannerHints = new Map([[zxingTryHarderHint, true]]);
       let codeReader = null;
       let scannerControls = null;
       let hasScanned = false;
@@ -6373,7 +6539,9 @@ def scan_page():
         hasScanned = true;
         setStatus('Kode lest');
         stopScan();
-        window.location.href = 'scan/result?code=' + encodeURIComponent(code);
+        const params = new URLSearchParams({ code });
+        if (scanLocation) params.set('location', scanLocation);
+        window.location.href = 'scan/result?' + params.toString();
       }
 
       async function requestCameraPermission() {
@@ -6431,8 +6599,8 @@ def scan_page():
             throw new Error('Fant ingen kameraenheter');
           }
           const deviceId = chooseCamera(videoInputs);
-          codeReader = codeReader || new ZXingBrowser.BrowserMultiFormatReader();
-          setStatus('Kamera startet – hold strekkoden rolig i bildet');
+          codeReader = codeReader || new ZXingBrowser.BrowserMultiFormatReader(scannerHints);
+          setStatus('Kamera startet – hold strekkoden rolig, stående eller liggende');
           scannerControls = await codeReader.decodeFromVideoDevice(
             deviceId,
             video,
@@ -6465,6 +6633,11 @@ def scan_page():
       }
     </script>
     """
+    return (
+        content.replace("__SCAN_LOCATION_CONTEXT__", location_context)
+        .replace("__SCAN_LOCATION_HIDDEN__", location_hidden)
+        .replace("__SCAN_LOCATION_JSON__", json.dumps(location, ensure_ascii=False))
+    )
 
 
 def shopping_list_page():
@@ -7176,6 +7349,36 @@ class Handler(BaseHTTPRequestHandler):
             consumable_url = query_link({"view": view, "kind": "consumable"})
             thing_url = query_link({"view": view, "kind": "thing"})
             all_url = query_link({"view": view, "kind": "all"})
+            add_location = location if location in locations else ""
+            manual_kind = "thing" if kind_view == "thing" else "consumable"
+            location_scan_url = (
+                "scan?" + urlencode({"location": add_location})
+                if add_location
+                else ""
+            )
+            location_new_url = (
+                "new?" + urlencode(
+                    {"kind": manual_kind, "location": add_location}
+                )
+                if add_location
+                else ""
+            )
+            location_add_panel = (
+                f"""
+                  <section class="location-add-panel" aria-label="Legg til i plassering">
+                    <div class="location-add-copy">
+                      <span>Valgt plassering</span>
+                      <strong>{esc(add_location)}</strong>
+                    </div>
+                    <div class="location-add-actions">
+                      <a class="btn primary" href="{esc(location_scan_url)}">Skann vare hit</a>
+                      <a class="btn" href="{esc(location_new_url)}">Skriv inn vare her</a>
+                    </div>
+                  </section>
+                """
+                if add_location
+                else ""
+            )
             filtered = bool(
                 search
                 or category
@@ -7187,6 +7390,7 @@ class Handler(BaseHTTPRequestHandler):
                 kind_view,
                 filtered=filtered,
                 clear_url=clear_url,
+                add_url=location_new_url,
             )
             if view == "list":
                 items_html = "".join(item_row(item) for item in items) or empty_html
@@ -7251,6 +7455,7 @@ class Handler(BaseHTTPRequestHandler):
                   <span>Alle</span><span class="inventory-tab-count">{consumable_count + thing_count}</span>
                 </a>
               </nav>
+              {location_add_panel}
               <form method="get" action="." class="toolbar">
                 <input type="hidden" name="view" value="{esc(view)}">
                 <input type="hidden" name="kind" value="{esc(kind_view)}">
@@ -7306,20 +7511,29 @@ class Handler(BaseHTTPRequestHandler):
             barcode = (query.get("barcode") or [""])[0]
             kind = (query.get("kind") or ["consumable"])[0]
             kind = kind if kind in ("consumable", "thing") else "consumable"
+            add_location = valid_location_context(
+                (query.get("location") or [""])[0]
+            )
             title = "Ny gjenstand" if kind == "thing" else "Ny vare"
             self.send_html(
                 title,
-                f"<h1>{title}</h1>{item_form(tag_id=tag_id, barcode=barcode, kind=kind)}",
+                f"<h1>{title}</h1>{item_form(tag_id=tag_id, barcode=barcode, kind=kind, location=add_location, add_location=add_location)}",
             )
             return
 
         if path == "scan":
-            self.send_html("Scan kode", scan_page())
+            query = parse_qs(urlparse(self.path).query)
+            add_location = valid_location_context(
+                (query.get("location") or [""])[0]
+            )
+            self.send_html("Scan kode", scan_page(add_location))
             return
 
         if path == "scan/result":
-            code = (parse_qs(urlparse(self.path).query).get("code") or [""])[0]
-            self.redirect(scanned_code_redirect(code))
+            query = parse_qs(urlparse(self.path).query)
+            code = (query.get("code") or [""])[0]
+            add_location = (query.get("location") or [""])[0]
+            self.redirect(scanned_code_redirect(code, add_location))
             return
 
         if path == "tag/open":
@@ -7465,7 +7679,10 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 query = parse_qs(urlparse(self.path).query)
                 created_notice = (
-                    created_item_notice(item)
+                    created_item_notice(
+                        item,
+                        (query.get("add_location") or [""])[0],
+                    )
                     if (query.get("created") or ["0"])[0] == "1"
                     else ""
                 )

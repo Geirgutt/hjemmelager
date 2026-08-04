@@ -957,14 +957,72 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertIn(".help-link", scan_content)
         self.assertIn('href="help">Hjelp og veiledning</a>', organize_content)
 
+    def test_scanner_reads_rotated_barcodes_in_live_view(self):
+        content = self.app.scan_page()
+
+        self.assertIn("const zxingTryHarderHint = 3", content)
+        self.assertIn("new Map([[zxingTryHarderHint, true]])", content)
+        self.assertIn("BrowserMultiFormatReader(scannerHints)", content)
+        self.assertIn("stående eller liggende", content)
+
+    def test_location_context_follows_scanner_to_new_item(self):
+        location = "Kjøkken > Kjøleskap"
+        self.create_item("Plassholder", location=location)
+
+        redirect = self.app.scanned_code_redirect("7041234567890", location)
+        scanner = self.app.scan_page(location)
+        form = self.app.item_form(
+            barcode="7041234567890",
+            location=location,
+            add_location=location,
+        )
+        manual_form = self.app.item_form(
+            location=location,
+            add_location=location,
+        )
+
+        self.assertIn("barcode=7041234567890", redirect)
+        self.assertIn("location=Kj%C3%B8kken+%3E+Kj%C3%B8leskap", redirect)
+        self.assertIn('name="location" value="Kjøkken &gt; Kjøleskap"', scanner)
+        self.assertIn("Varene legges i", scanner)
+        self.assertIn('name="add_location" type="hidden"', form)
+        self.assertIn("Legges i", form)
+        self.assertIn("Kjøkken &gt; Kjøleskap", form)
+        self.assertIn("data-open-location-details", form)
+        self.assertIn(
+            'href="scan?location=Kj%C3%B8kken+%3E+Kj%C3%B8leskap"',
+            manual_form,
+        )
+        self.assertNotIn("{esc(scan_url)}", manual_form)
+
+    def test_location_batch_add_offers_next_item_without_moving_known_product(self):
+        location = "Kjøkken > Kjøleskap"
+        item = self.create_item(
+            "Kjent vare",
+            location=location,
+            barcode="7040000000001",
+        )
+
+        redirect = self.app.new_item_redirect(item, {"add_location": location})
+        notice = self.app.created_item_notice(item, location)
+        known_redirect = self.app.scanned_code_redirect("7040000000001", location)
+
+        self.assertIn("created=1", redirect)
+        self.assertIn("add_location=Kj%C3%B8kken+%3E+Kj%C3%B8leskap", redirect)
+        self.assertIn("Skann neste vare hit", notice)
+        self.assertIn("Skriv inn en til", notice)
+        self.assertIn("Ferdig – vis plasseringen", notice)
+        self.assertEqual(known_redirect, f"item/{item['id']}")
+
     def test_release_version_is_consistent(self):
         addon_dir = Path(__file__).parents[1]
         config = (addon_dir / "config.yaml").read_text(encoding="utf-8")
         docs = (addon_dir / "DOCS.md").read_text(encoding="utf-8")
         changelog = (addon_dir / "CHANGELOG.md").read_text(encoding="utf-8")
 
-        self.assertEqual(self.app.APP_VERSION, "1.4.2")
-        self.assertIn('version: "1.4.2"', config)
+        self.assertEqual(self.app.APP_VERSION, "1.4.3")
+        self.assertIn('version: "1.4.3"', config)
+        self.assertIn("1.4.3 - Rett på plass", changelog)
         self.assertIn("1.4.0 - Ryddig vareflyt", docs)
         self.assertIn("1.4.0 - Ryddig vareflyt", changelog)
 
