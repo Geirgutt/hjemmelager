@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.4.9 - Bare det som er på lager
+
+- Skjuler varer og gjenstander som verken har uåpnet eller åpnet beholdning fra den vanlige lagerlisten.
+- Lar navnesøk fortsatt finne tomme produkter, slik at de kan fylles opp eller åpnes igjen.
+- Legger til filteret «Vis også tomme varer», også når lageret er åpnet via en plassering.
+- Beholder tomme produkter på handlelisten når varsling og innkjøp er slått på.
+- Oppdaterer lagertallene til bare å telle det som faktisk finnes på lager.
+
 ## 1.4.8 - Hjemmelager på GitHub
 
 - Flytter den offisielle repository-adressen til `Geirgutt/hjemmelager`.

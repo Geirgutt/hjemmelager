@@ -27,8 +27,8 @@ except ImportError:
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "1.4.8"
-APP_CODENAME = "Hjemmelager på GitHub"
+APP_VERSION = "1.4.9"
+APP_CODENAME = "Bare det som er på lager"
 TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
@@ -50,6 +50,7 @@ PRODUCT_SEARCH_CACHE_SECONDS = 15 * 60
 LOW_STOCK_WHERE = (
     "kind = 'consumable' and shopping_enabled = 1 and quantity <= min_quantity"
 )
+IN_STOCK_WHERE = "(quantity > 0 or opened_quantity > 0)"
 NUTRITION_NUMBER_FIELDS = (
     "energy_kcal_100g",
     "energy_kcal_serving",
@@ -629,21 +630,30 @@ def list_items(where="", params=(), sort="default"):
     return [row_to_item(row) for row in rows]
 
 
-def count_items(kind=""):
+def count_items(kind="", in_stock_only=False):
     query = "select count(*) as total from items"
-    params = ()
+    clauses = []
+    params = []
     if kind:
-        query += " where kind = ?"
-        params = (kind,)
+        clauses.append("kind = ?")
+        params.append(kind)
+    if in_stock_only:
+        clauses.append(IN_STOCK_WHERE)
+    if clauses:
+        query += " where " + " and ".join(clauses)
     with db() as conn:
-        row = conn.execute(query, params).fetchone()
+        row = conn.execute(query, tuple(params)).fetchone()
     return int(row["total"])
 
 
 def dashboard_summary():
     alerts = create_alerts_payload()
     with db() as conn:
-        total = int(conn.execute("select count(*) as total from items").fetchone()["total"])
+        total = int(
+            conn.execute(
+                f"select count(*) as total from items where {IN_STOCK_WHERE}"
+            ).fetchone()["total"]
+        )
         recent = conn.execute(
             """
             select events.*, items.name as item_name
@@ -998,6 +1008,7 @@ def build_item_filters(
     low_only=False,
     kind="",
     expiry_only=False,
+    in_stock_only=False,
 ):
     clauses = []
     params = []
@@ -1018,6 +1029,8 @@ def build_item_filters(
     if expiry_only:
         clauses.append("kind = 'consumable' and best_before != '' and best_before <= ?")
         params.append((date.today() + timedelta(days=14)).isoformat())
+    if in_stock_only:
+        clauses.append(IN_STOCK_WHERE)
     return " and ".join(clauses), tuple(params)
 
 
@@ -1065,7 +1078,7 @@ def create_alerts_payload(days=14):
     threshold = (date.today() + timedelta(days=days)).isoformat()
     low_items = list_items(LOW_STOCK_WHERE)
     expiry_items = list_items(
-        "kind = 'consumable' and best_before != '' and best_before <= ?",
+        f"kind = 'consumable' and {IN_STOCK_WHERE} and best_before != '' and best_before <= ?",
         (threshold,),
         sort="best_before",
     )
@@ -5044,6 +5057,30 @@ def page(title, body, base_path=""):
       if (menuTrigger) menuTrigger.disabled = quantity <= 0 && openedQuantity <= 0;
     }}
 
+    function hideEmptyInventoryItem(itemContainer, item) {{
+      if (!itemContainer || !item || !document.querySelector(".inventory-title")) return;
+      const inventorySearch = document.querySelector('.toolbar input[name="q"]');
+      if (inventorySearch?.value.trim()) return;
+      if (document.querySelector('.toolbar input[name="empty"]:checked')) return;
+      const quantity = Number(item.quantity || 0);
+      const openedQuantity = Number(item.opened_quantity || 0);
+      if (quantity > 0 || openedQuantity > 0) return;
+      itemContainer.hidden = true;
+      const inventoryItems = [...document.querySelectorAll("[data-item-id]")];
+      if (inventoryItems.some((candidate) => !candidate.hidden)) return;
+      const container = itemContainer.parentElement;
+      if (!container || container.querySelector(".live-empty-state")) return;
+      const emptyState = document.createElement("section");
+      emptyState.className = "empty-state live-empty-state";
+      const heading = document.createElement("h2");
+      heading.textContent = "Ingenting på lager akkurat nå";
+      const explanation = document.createElement("p");
+      explanation.className = "muted";
+      explanation.textContent = "Tomme varer er fortsatt lagret og kan finnes med navnesøk eller på handlelisten.";
+      emptyState.append(heading, explanation);
+      container.append(emptyState);
+    }}
+
     function showPackageFeedback(status, message, itemId) {{
       if (!status) return;
       window.clearTimeout(status.packageFeedbackTimer);
@@ -5106,6 +5143,7 @@ def page(title, body, base_path=""):
             : itemName + ": én åpnet pakke er brukt opp.",
           itemId
         );
+        hideEmptyInventoryItem(itemContainer, payload.item);
       }} catch (error) {{
         if (status) {{
           status.classList.remove("increased", "decreased", "package-feedback");
@@ -5135,6 +5173,8 @@ def page(title, body, base_path=""):
         const payload = await response.json();
         if (payload.status !== "undone") throw new Error("Endringen kan ikke angres");
         updateItemCard(itemContainer, payload.item);
+        itemContainer.hidden = false;
+        document.querySelector(".live-empty-state")?.remove();
         window.clearTimeout(status.packageFeedbackTimer);
         status.classList.remove("increased", "decreased", "package-feedback");
         status.textContent = "Pakkeendringen er angret.";
@@ -5197,6 +5237,7 @@ def page(title, body, base_path=""):
           status.textContent = itemName + ": fra " + formatQuantity(series.startQuantity) + " til " + formatQuantity(next);
           status.quickFeedbackSeries = series;
         }}
+        hideEmptyInventoryItem(itemContainer, payload.item);
         series.timer = window.setTimeout(() => {{
           if (quickAdjustmentSeries.get(itemId) !== series) return;
           quickAdjustmentSeries.delete(itemId);
@@ -5457,7 +5498,13 @@ def query_link(params, **updates):
     return "." + (f"?{query}" if query else "")
 
 
-def inventory_empty_state(kind_view, filtered=False, clear_url=".", add_url=""):
+def inventory_empty_state(
+    kind_view,
+    filtered=False,
+    clear_url=".",
+    add_url="",
+    has_empty_items=False,
+):
     if filtered:
         add_url = add_url or (
             f"new?kind={'thing' if kind_view == 'thing' else 'consumable'}"
@@ -5472,6 +5519,25 @@ def inventory_empty_state(kind_view, filtered=False, clear_url=".", add_url=""):
             <div class="empty-state-actions">
               <a class="btn primary" href="{clear_url}">Vis hele lageret</a>
               <a class="btn" href="{esc(add_url)}">Legg til ny</a>
+            </div>
+          </section>
+        """
+    if has_empty_items:
+        shopping_action = (
+            '<a class="btn primary" href="low-stock">Åpne handlelisten</a>'
+            if kind_view != "thing"
+            else ""
+        )
+        return f"""
+          <section class="empty-state">
+            <span class="empty-state-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M4 8.5 12 4l8 4.5v9L12 22l-8-4.5z"></path><path d="m4 8.5 8 4.5 8-4.5M12 13v9"></path></svg>
+            </span>
+            <h2>Ingenting på lager akkurat nå</h2>
+            <p class="muted">Tomme varer er fortsatt lagret og kan finnes med navnesøk{", eller på handlelisten" if kind_view != "thing" else ""}.</p>
+            <div class="empty-state-actions">
+              {shopping_action}
+              <a class="btn" href="new">Legg til noe</a>
             </div>
           </section>
         """
@@ -7303,6 +7369,8 @@ def help_page():
                     "Bruk pluss og minus på varekortet for raske lagerendringer.",
                     "Åpne pakke flytter én enhet fra uåpnet til åpnet beholdning.",
                     "Bruk opp på varekortet fullfører én åpnet pakke.",
+                    "Når både uåpnet og åpnet beholdning er 0, skjules varen fra lageroversikten, men kan fortsatt finnes med søk.",
+                    "Slå på Vis også tomme varer under filtre når du vil se dem sammen med resten av lageret.",
                     "Bruk Angre rett etter en feil lagerjustering.",
                     "Historikken viser hva som ble endret og når.",
                 ),
@@ -7745,6 +7813,7 @@ class Handler(BaseHTTPRequestHandler):
                 kind_view = "consumable"
             low_only = (query.get("low") or [""])[0] == "1"
             expiry_only = (query.get("expiry") or [""])[0] == "1"
+            show_empty = (query.get("empty") or [""])[0] == "1"
             if kind_view == "thing":
                 low_only = False
                 expiry_only = False
@@ -7755,6 +7824,7 @@ class Handler(BaseHTTPRequestHandler):
                 low_only,
                 "" if kind_view == "all" else kind_view,
                 expiry_only,
+                in_stock_only=not bool(search) and not show_empty,
             )
             items = list_items(
                 where,
@@ -7765,12 +7835,14 @@ class Handler(BaseHTTPRequestHandler):
                 items = [item for item in items if item_matches_search(item, search)]
             categories = distinct_values("category")
             locations = distinct_values("location")
-            consumable_count = count_items("consumable")
-            thing_count = count_items("thing")
+            consumable_count = count_items("consumable", in_stock_only=True)
+            thing_count = count_items("thing", in_stock_only=True)
+            registered_consumable_count = count_items("consumable")
+            registered_thing_count = count_items("thing")
             expiry_threshold = (date.today() + timedelta(days=14)).isoformat()
             expiring_count = len(
                 list_items(
-                    "kind = 'consumable' and best_before != '' and best_before <= ?",
+                    f"kind = 'consumable' and {IN_STOCK_WHERE} and best_before != '' and best_before <= ?",
                     (expiry_threshold,),
                 )
             )
@@ -7792,6 +7864,7 @@ class Handler(BaseHTTPRequestHandler):
                 "location": location,
                 "low": "1" if low_only else "",
                 "expiry": "1" if expiry_only else "",
+                "empty": "1" if show_empty else "",
                 "view": view,
                 "kind": kind_view,
             }
@@ -7810,9 +7883,13 @@ class Handler(BaseHTTPRequestHandler):
                 expiry="" if expiry_only else "1",
             )
             clear_url = query_link({"view": view, "kind": kind_view})
-            consumable_url = query_link({"view": view, "kind": "consumable"})
-            thing_url = query_link({"view": view, "kind": "thing"})
-            all_url = query_link({"view": view, "kind": "all"})
+            tab_params = {
+                "view": view,
+                "empty": "1" if show_empty else "",
+            }
+            consumable_url = query_link(tab_params, kind="consumable")
+            thing_url = query_link(tab_params, kind="thing")
+            all_url = query_link(tab_params, kind="all")
             add_location = location if location in locations else ""
             manual_kind = "thing" if kind_view == "thing" else "consumable"
             location_scan_url = (
@@ -7855,6 +7932,13 @@ class Handler(BaseHTTPRequestHandler):
                 filtered=filtered,
                 clear_url=clear_url,
                 add_url=location_new_url,
+                has_empty_items=(
+                    registered_consumable_count > 0
+                    if kind_view == "consumable"
+                    else registered_thing_count > 0
+                    if kind_view == "thing"
+                    else registered_consumable_count + registered_thing_count > 0
+                ),
             )
             if view == "list":
                 items_html = "".join(item_row(item) for item in items) or empty_html
@@ -7944,6 +8028,10 @@ class Handler(BaseHTTPRequestHandler):
                     <label class="expiry-filter-label">
                       <input type="checkbox" name="expiry" value="1" {"checked" if expiry_only else ""}>
                       Best før innen 14 dager
+                    </label>
+                    <label>
+                      <input type="checkbox" name="empty" value="1" {"checked" if show_empty else ""}>
+                      Vis også tomme varer
                     </label>
                     <button class="btn primary">Bruk filtre</button>
                     <a class="btn" href="{clear_url}">Nullstill</a>

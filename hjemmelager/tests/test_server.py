@@ -160,6 +160,11 @@ class HjemmelagerTests(unittest.TestCase):
         self.assertIn("data-quick-decrease", card)
         self.assertIn("decreaseButton.disabled = quantity <= 0", full_page)
         self.assertIn("submitter.disabled = delta < 0 && currentQuantity <= 0", full_page)
+        self.assertIn("hideEmptyInventoryItem", full_page)
+        self.assertIn("itemContainer.hidden = true", full_page)
+        self.assertIn('input[name="empty"]:checked', full_page)
+        self.assertIn("Ingenting på lager akkurat nå", full_page)
+        self.assertIn("live-empty-state", full_page)
         self.assertIn("cursor: not-allowed", full_page)
         self.assertIn(
             f'<a class="item-name-link" href="item/{item["id"]}">Melk<span aria-hidden="true">›</span></a>',
@@ -546,6 +551,45 @@ class HjemmelagerTests(unittest.TestCase):
         )
         self.assertNotIn(later["id"], [item["id"] for item in filtered])
 
+    def test_inventory_hides_empty_items_but_search_can_find_them(self):
+        stocked = self.create_item("Ris", quantity="2")
+        opened = self.create_item("Melk", quantity="0", opened_quantity="1")
+        empty = self.create_item(
+            "Kaffe",
+            quantity="0",
+            opened_quantity="0",
+            min_quantity="1",
+        )
+
+        where, params = self.app.build_item_filters(
+            kind="consumable",
+            in_stock_only=True,
+        )
+        visible = self.app.list_items(where, params)
+
+        self.assertEqual(
+            {item["id"] for item in visible},
+            {stocked["id"], opened["id"]},
+        )
+        all_consumables = self.app.list_items("kind = ?", ("consumable",))
+        search_results = [
+            item
+            for item in all_consumables
+            if self.app.item_matches_search(item, "Kaffe")
+        ]
+        self.assertEqual([item["id"] for item in search_results], [empty["id"]])
+        self.assertIn(empty["id"], [item["id"] for item in all_consumables])
+        self.assertEqual(
+            self.app.count_items("consumable", in_stock_only=True),
+            2,
+        )
+        self.assertIn("Kaffe", self.app.shopping_list_page())
+        server_source = (Path(__file__).parents[1] / "app" / "server.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('name="empty" value="1"', server_source)
+        self.assertIn("Vis også tomme varer", server_source)
+
     def test_expiry_batches_keep_separate_dates_and_use_oldest_first(self):
         later = (date.today() + timedelta(days=10)).isoformat()
         sooner = (date.today() + timedelta(days=3)).isoformat()
@@ -663,11 +707,18 @@ class HjemmelagerTests(unittest.TestCase):
             filtered=True,
             clear_url=".?kind=consumable",
         )
+        empty_inventory = self.app.inventory_empty_state(
+            "consumable",
+            has_empty_items=True,
+        )
 
         self.assertIn("Skann strekkode", consumable)
         self.assertIn("new?kind=thing", thing)
         self.assertIn("Ingen treff", filtered)
         self.assertIn("Vis hele lageret", filtered)
+        self.assertIn("Ingenting på lager akkurat nå", empty_inventory)
+        self.assertIn("navnesøk", empty_inventory)
+        self.assertIn("Åpne handlelisten", empty_inventory)
 
     def test_new_thing_form_uses_plain_thing_language(self):
         form = self.app.item_form(kind="thing")
@@ -1057,10 +1108,10 @@ class HjemmelagerTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertEqual(self.app.APP_VERSION, "1.4.8")
-        self.assertIn('version: "1.4.8"', config)
-        self.assertIn("1.4.8 - Hjemmelager på GitHub", changelog)
-        self.assertIn("1.4.8 - Hjemmelager på GitHub", docs)
+        self.assertEqual(self.app.APP_VERSION, "1.4.9")
+        self.assertIn('version: "1.4.9"', config)
+        self.assertIn("1.4.9 - Bare det som er på lager", changelog)
+        self.assertIn("1.4.9 - Bare det som er på lager", docs)
         for content in (repository_config, config, docs, blueprint, server_source):
             self.assertNotIn("Geirgutt/tr-kker", content)
             self.assertIn("Geirgutt/hjemmelager", content)
@@ -1386,9 +1437,9 @@ class HjemmelagerTests(unittest.TestCase):
 
         summary = self.app.dashboard_summary()
 
-        self.assertEqual(summary["total"], 1)
+        self.assertEqual(summary["total"], 0)
         self.assertEqual(summary["low_stock"], 1)
-        self.assertEqual(summary["best_before"], 1)
+        self.assertEqual(summary["best_before"], 0)
         self.assertEqual(summary["recent"]["item_name"], "Melk")
 
     def test_inventory_csv_is_readable_and_keeps_norwegian_text(self):
