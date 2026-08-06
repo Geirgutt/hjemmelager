@@ -27,8 +27,8 @@ except ImportError:
 
 
 APP_NAME = "Hjemmelager"
-APP_VERSION = "1.4.9"
-APP_CODENAME = "Bare det som er på lager"
+APP_VERSION = "1.4.10"
+APP_CODENAME = "Kompakte filtre"
 TAG_LINK_TTL_SECONDS = 180
 DATA_DIR = Path(os.environ.get("HJEMMELAGER_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "hjemmelager.db"
@@ -8029,7 +8029,7 @@ class Handler(BaseHTTPRequestHandler):
                       <input type="checkbox" name="expiry" value="1" {"checked" if expiry_only else ""}>
                       Best før innen 14 dager
                     </label>
-                    <label>
+                    <label class="expiry-filter-label">
                       <input type="checkbox" name="empty" value="1" {"checked" if show_empty else ""}>
                       Vis også tomme varer
                     </label>

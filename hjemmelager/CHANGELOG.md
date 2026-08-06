@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.10 - Kompakte filtre
+
+- Hold avhukningen for «Vis også tomme varer» og teksten på samme linje.
+
 ## 1.4.9 - Bare det som er på lager
 
 - Skjuler varer og gjenstander som verken har uåpnet eller åpnet beholdning fra den vanlige lagerlisten.

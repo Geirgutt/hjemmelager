@@ -289,7 +289,7 @@ Hver godkjente versjon skal ha både versjonsnummer og kodenavn.
 Gjeldende versjon er:
 
 ```text
-1.4.9 - Bare det som er på lager
+1.4.10 - Kompakte filtre
 ```
 
 Kontroller installert versjon på én av disse måtene:

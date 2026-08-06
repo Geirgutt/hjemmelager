@@ -1108,10 +1108,11 @@ class HjemmelagerTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertEqual(self.app.APP_VERSION, "1.4.9")
-        self.assertIn('version: "1.4.9"', config)
+        self.assertEqual(self.app.APP_VERSION, "1.4.10")
+        self.assertIn('version: "1.4.10"', config)
+        self.assertIn("1.4.10 - Kompakte filtre", changelog)
+        self.assertIn("1.4.10 - Kompakte filtre", docs)
         self.assertIn("1.4.9 - Bare det som er på lager", changelog)
-        self.assertIn("1.4.9 - Bare det som er på lager", docs)
         for content in (repository_config, config, docs, blueprint, server_source):
             self.assertNotIn("Geirgutt/tr-kker", content)
             self.assertIn("Geirgutt/hjemmelager", content)
